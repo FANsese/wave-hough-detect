@@ -1,0 +1,20 @@
+# R
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# R session artifacts
+Rplots.pdf
+.rapp.history
+
+# Script outputs
+plots/
+stomach_simulation_data.csv
+tables234.txt
+*.pdf
+*.png
+
+# OS
+.DS_Store
+Thumbs.db
