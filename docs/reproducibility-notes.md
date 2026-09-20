@@ -1,165 +1,185 @@
 # Reproducibility notes
 
-Practical notes for re-running the code: what to switch on, how randomness is controlled, and
-which settings are worth double-checking against the manuscript.
+What can be reproduced from this repository alone, what cannot, and why.
 
 ---
 
-## 1. Switches that must be set before a run
+## 1. Determinism
 
-Several scripts use module-level constants to select between alternative code paths, and in a few
-places a loop variable silently overrides a constant declared above it. Check these before
-interpreting any output.
-
-| File | Line | Committed value | Set to | To get |
-|---|---|---|---|---|
-| `R/02_simulation/fig5_detection_performance.R` | 683 | `shifts = 0` | `shifts = 1:100` | the 100-replicate study (Fig. 5) |
-| `R/02_simulation/fig7_fig8_fitting_accuracy.R` | 880 | `plot.mode = 3` | `1` | accuracy vs SNR (Fig. 7) |
-| | | | `2` | accuracy vs missing probability (Fig. 8) |
-| `R/01_spike_detection/spike_activation_time.R` | 34 | `for (smooth.method in 1)` | `in 2` | Butterworth branch (line 12 is overridden by this loop) |
-| | 37 | `for (i in 6)` | `2:ncol(data)` | all channels instead of channel index 6 |
-| | 21 | `# data = read.csv(filename)` | uncomment | read the CSV; otherwise `data` must pre-exist |
-| `R/03_real_data/tables2to4_pipeline.R` | 23 | `Data_CK/heart/...csv` | your path | locate the recording |
-
-Note on line 34 of `spike_activation_time.R`: `for (smooth.method in 1)` assigns the loop
-variable, so the value set at line 12 has no effect. `1 = LOWESS`, `2 = BUTTER`, `3 = NOSMOOTH`
-(constants at lines 6–8).
-
----
-
-## 2. Randomness
-
-Every simulator seeds itself deterministically from its own parameters, so a single run is exactly
-reproducible:
-
-```r
-SEED_BASE = 1000000                                    # 101 in generate_simulation_data.R
-set.seed(SEED_BASE * limit * time.max * ts * x * y * u.x * u.y * p * noise.freq * miu * sigma
-         + seed.shift)
-```
-
-`seed.shift` defaults to `1` and is the single knob used to obtain independent replicates.
-The replicate study in `fig5_detection_performance.R` passes it through
-`visualize2d(theta, seed.shift)` (line 344) and iterates over it at line 686.
-
-Each simulator carries its own `SEED_BASE`, and two of them appear in the same file:
-
-| File | Simulator | `SEED_BASE` | `seed.shift` |
-|---|---|---|---|
-| `generate_simulation_data.R` | `stomach.sim2d` | `101` (line 10) | no |
-| `fig5_detection_performance.R` | `stomach.sim` | `1000000` (line 53) | no |
-| `fig5_detection_performance.R` | `stomach.sim2d` | `101` (line 119) | **yes** (line 116) |
-| `fig7_fig8_fitting_accuracy.R` | `stomach.sim` | `1000000` (line 62) | no |
-| `fig7_fig8_fitting_accuracy.R` | `stomach.sim2d` | `100` (line 158) | no |
-
-Note that `fig7_fig8_fitting_accuracy.R`'s circular simulator has **no** `seed.shift`. Independence
-across the sweep points of Figures 7 and 8 comes instead from the fact that the seed expression
-itself contains the swept parameter (`p`, `noise.freq` and `sigma` all appear in it), so each
-setting receives a different seed. Alternative `SEED_BASE` values that were tried during
-development are left as comments at `fig5_detection_performance.R:117-127`.
-
----
-
-## 3. Simulation conventions
-
-* **Parameter encoding.** The simulator uses `ratio` for the anisotropy between the two grid
-  axes: the y-direction travel time is drawn as `rnorm(1, mean = ratio*miu, sd = ratio*sigma)`.
-  With `miu = 1`, `sigma = 0.1`, `ratio = 2` this yields `μ_y = 2`, `σ_y = 0.2`.
-* **Speed units.** The circular simulator places electrodes on an integer grid and uses
-  `miux = miuy = 1`, so the speed is in *grid units per unit time* — with `limit = 96` and
-  `time.max = 96`, the ground truth is `v = 1`.
-* **Single wave vs many.** `fig7_fig8_fitting_accuracy.R` sets `gap = 1000000` (line 657), which
-  effectively emits a single wave per run — appropriate for the fitting-accuracy study. The
-  detection study uses `gap = 30` to produce several successive waves.
-* **Missing-detection mechanism.** Each candidate spike is retained with probability `1 − p`:
-
-  ```r
-  if (runif(1,0,1) > p) { ... }      # generate_simulation_data.R:30
-  if (arrival.time < time.max) {
-    if (runif(1,0,1) > p) { ... }    # fig7_fig8_fitting_accuracy.R:132-136
-  }
-  ```
-
-  In the circular simulator the check sits inside the `(i, j)` grid loop, so it is applied per
-  electrode. The helper `within.range()` defined at `fig7_fig8_fitting_accuracy.R:103-105` is not
-  called — the loop that used it is commented out at lines 141–150. The live bounds check is the
-  `arrival.time < time.max` test at line 131, so spikes arriving after `time.max` are dropped
-  rather than wrapped.
-* **Inter-wave interval.** In `fig7_fig8_fitting_accuracy.R:171` successive excitation times are
-  spaced by `rexp(1, 1/gap)`; `generate_simulation_data.R:66` uses `rchisq(1, gap)` instead. Both
-  have mean `gap` but different dispersion, so the two scripts produce synthetically different
-  wave trains. For the 96×96 study `gap = 1000000`, which in practice emits a single wave.
-
----
-
-## 4. Filter design
-
-The Butterworth high-pass filter used in the real-data pipeline is
-
-```r
-butter(2, 1/500, type="high")     # R/03_real_data/tables2to4_pipeline.R:55
-```
-
-In the `signal` package, `butter(n, W)` takes **`n` = filter order** and **`W` = cut-off as a
-fraction of the Nyquist frequency**. So this designs a **2nd-order** filter with a cut-off at
-Nyquist/500.
-
-The filter order and cut-off are the two settings that most strongly affect which spikes survive,
-so they are worth stating explicitly wherever the pipeline is described:
-
-| Variant in this repository | Call | Note |
+| Path | Deterministic? | Seeded by |
 |---|---|---|
-| `R/03_real_data/tables2to4_pipeline.R:55` | `butter(2, 1/500, type="high")` | used for the real-data study |
-| `R/01_spike_detection/spike_activation_time.R:47` | `butter(2, 1/500, type="high")` | same design |
-| `R/01_spike_detection/butterworth_design_demo.R:2` | `butter(3, 0.3, type="high")` | standalone design demo only |
+| Stage 1 — spike detection | **yes**, exactly | no randomness at all |
+| Stage 2 — RHT | **no**, it is a randomised algorithm | `seed=` argument (numpy `default_rng`), or an explicit `trace` |
+| Stage 3 — fitting | yes, given the stage-2 output | no randomness |
+| §3.1.1 simulation | yes, given `seed_shift` | `SEED_BASE × Π(parameters) + seed_shift` |
+| §3.1.2 simulation | yes, given `seed_shift` | `100 × Π(parameters) + seed_shift` |
+| Synthetic recording | yes, given `seed` | `seed=20260915` by default |
 
-To use a different order or cut-off, edit the single call at
-`R/03_real_data/tables2to4_pipeline.R:55`; nothing else depends on the filter coefficients.
+The RHT is randomised by design: the number of iterations needed is a **random variable**. Over 30
+seeds on the experimental data it has mean ≈ 13 800 and range 8 795–21 425 — a factor of 2.4. This
+is a property of the method, not of the implementation. All 30 seeds found all 5 planes.
 
----
-
-## 5. Time units
-
-Two scalings appear in the real-data scripts:
-
-| Location | Expression | Implication |
-|---|---|---|
-| `spike_activation_time.R:95,117` | `xs = smooth$x / 10`, labelled `"Time(ms)"` | sample index ÷ 10 = ms → 10 kHz acquisition |
-| `spike_activation_time.R:136`, `tables2to4_pipeline.R:115` | `all.lines$ts.observ = all.lines$ts.observ / 200` | column 1 of the CSV ÷ 200 |
-
-The excitation times `t₀` reported by `tables2to4_pipeline.R` are in whatever unit the second
-conversion produces. If you are comparing printed output against published values, check the unit
-of column 1 of your copy of `CM_PIN_Control_2N30_Aunor_2_input_60000.csv` first; the constant at
-`tables2to4_pipeline.R:115` is the only place that scaling is applied.
+Within one Python process, passing the same `seed` reproduces the same result. Across R and Python
+it does **not**, because the random number generators are different — see section 3.
 
 ---
 
-## 6. Graphics
-
-* Figures 3, 4 and 10 are produced with `rgl` 3-D devices. `rgl.snapshot()` (used in
-  `fig7_fig8_fitting_accuracy.R:687`) and `dev.copy()` (used in `spike_activation_time.R:107,127`)
-  write the files; create a `plots/` directory first.
-* `stomach.plot2d.interactive()` enters an infinite right-click loop when called with
-  `highlight.plane = -1` (the default). It is disabled by passing `0`, which is what
-  `fig5_detection_performance.R:361` does. Set `highlight.plane = k` (k ≥ 1) to render a single
-  plane statically — useful for reproducing Figure 10 without a manual session.
-* Figure 5 is a boxplot of the per-replicate rates accumulated in `optimal.stats`; the script
-  prints the mean and standard deviation but the plotted box is drawn separately from those
-  numbers.
-
----
-
-## 7. Outputs written to disk
-
-| File | Written by |
-|---|---|
-| `stomach_simulation_data.csv` | `generate_simulation_data.R:110` |
-| `plots/smoothing<m>_<channel>_<spike>.pdf`, `plots/smoothing<m>_<channel>.png` | `spike_activation_time.R:107,127` |
-| `plots/plot_mode<k>_<1..4>.pdf` | `fig7_fig8_fitting_accuracy.R:898-900,917-919,939-941` |
-| `plots/cone_simulate.png` | `fig7_fig8_fitting_accuracy.R:687` (with `plot.3d = TRUE`) |
-
-Tables 2, 3 and 4 are printed to standard output rather than written to a file:
+## 2. Exact commands
 
 ```bash
-Rscript R/03_real_data/tables2to4_pipeline.R | tee tables234.txt
+# Full pipeline on a synthesised recording, with a ground-truth check  (~2 min)
+python examples/demo_simulation.py --seeds 100
+
+# Simulation study only, fewer seeds                                        (~10 s)
+python examples/demo_simulation.py --seeds 5
+
+# The paper's tables (needs the experimental recording)                      (~12 s)
+python examples/demo_pipeline.py --data /path/to/recording.csv
+
+# Where noise is removed, layer by layer                                    (~1 min)
+python tools/noise_analysis.py --data /path/to/recording.csv
+
+# Standard dense Hough transform vs RHT                                     (~1 s)
+python tools/compare_ht_vs_rht.py --data /path/to/recording.csv
+
+# Test suite, no experimental data needed                                   (~1 min)
+pytest -q
 ```
+
+---
+
+## 3. R ↔ Python: statistically equivalent, never bit-wise
+
+R's `sample()` uses Mersenne-Twister with rejection sampling; numpy uses PCG64. There is no way to
+make numpy emit R's stream. Two consequences:
+
+* **The port's logic is verified bit for bit** by having R export the exact sequence of sampled
+  index triples and replaying it in Python (`dev/verify_against_r/`). Every step *except* the
+  random draw is compared exactly — see `docs/porting-and-validation.md` for the results.
+* **The simulation study is statistically equivalent only.** `simulate_linear_wavefronts()`
+  reproduces R's *sampling structure* (which draw happens when, from which distribution) and R's
+  *seed arithmetic*, so a given parameter set is reproducible within Python, but the datasets
+  themselves differ from R's. The FPR/FNR distributions agree in character, not in digits.
+
+This is a hard boundary. Do not describe the simulation layer as "matching R".
+
+---
+
+## 4. The two time scales, and the trap they create
+
+The pipeline uses two different scalings of the time axis, and mixing them up produces wrong
+answers **without any error message**:
+
+```
+raw time (ms)  --/200-->  Hough scale  --hough_plane-->  planes
+                              |
+                              +--×200-->  back to ms  -->  result.array  -->  fitting
+```
+
+The conversion points are `spikes_to_table()` (`TIME_SCALE = 200`) and `build_result_array()`
+(`TIME_SCALE_BACK = 200.0`).
+
+Why `/200`: the Hough transform treats `(x, y, t)` as a 3-D point cloud and applies a single inlier
+tolerance (0.1) and a single ρ quantisation step (0.05) to all three axes. With the experimental
+recording, `x, y ∈ [1, 8]` and `t ∈ [4.8, 38.9]` after division — comparable magnitudes. Without the
+division, `σ` within a plane is ≈ 5.35 against a tolerance of 0.1 and **not a single plane is
+found**.
+
+Why the input's time column must be in milliseconds: because the *fitted* times are the original
+column values, and `v` comes out in grid-units per column-unit. The paper reports `v ≈ 0.44`, which
+is grid-units per millisecond. Writing the time column in units of 1/200 ms moves the Hough-scale
+`t` to ≈ 900–8700 while `x, y` stay in `[1, 8]` — three orders of magnitude apart. Measured result:
+14 planes instead of 9, every normal pointing along `x` or along a grid diagonal, `v ≈ 0`,
+`t₀ ≈ ±2×10⁷`.
+
+The released R script `make_synthetic_recording.R` sets `TIME_UNITS_PER_MS <- 200` and its comment
+recommends commenting out the `/200` line when it is set to 1. **Both halves of that advice are
+wrong.** The time column must be in ms and the `/200` must stay. The Python port therefore defaults
+to `time_units_per_ms=1.0` and this is pinned by
+`tests/test_simulate.py::test_simulate_recording_time_column_is_milliseconds`.
+
+---
+
+## 5. Runtimes measured on this machine
+
+Apple M1 MacBook Air, Python 3.11.15, numpy 2.4.6, scipy 1.17.1, pandas 3.0.5.
+
+| Task | Time | Notes |
+|---|---|---|
+| Read the 55 MB / 90 000 × 65 CSV | ≈ 3 s | |
+| Stage 1, all 64 channels | 0.5 s | |
+| Stage 2, RHT (200 000 iteration cap) | 0.6 s | ≈ 33 000 iterations actually used |
+| Stage 3, five planes, circular + linear | 9.9 s | the circular fits dominate |
+| **Full pipeline, end to end** | **11.8 s** | `examples/demo_pipeline.py` |
+| §3.1.1 detection evaluation, one dataset | 0.69 s | |
+| §3.1.1 sweep, 100 seeds | 69 s | |
+| §3.1.2 one dataset (9 297 points) + fit | 0.02 s + 0.17 s | converges in 4 iterations |
+| §3.1.2 full three sweeps (R's replicate counts) | ≈ 4 min | 529 + 81 + 100 replicates |
+| Synthetic recording generation | ≈ 4 s | 5.76 M normal draws |
+| Test suite (84 tests) | ≈ 60 s | |
+
+Peak memory for the real-data pipeline is dominated by the voltage matrix
+(90 000 × 64 float64 = 46 MB) plus the filtered copy. The accumulator of the standard dense Hough
+transform at 2° resolution is 52.6 MB (`1624 × 90 × 90` int32); RHT's is a hash table holding fewer
+than 100 keys at peak.
+
+---
+
+## 6. The state of the original R code
+
+The paper's experiments are spread over 6 R files, 2 760 lines. Three points matter for
+reproducibility:
+
+1. **There are two copies of `hough.plane`, with different parameters.** The real-data pipeline
+   (`cm_hough_grid_8.R`) uses ρ step 0.05 and inlier tolerance 0.1; the simulation copy
+   (`fig5_detection_performance.R`) uses 0.5 and 1.0, and also tests one more degenerate-normal
+   condition. The factor of 10 is explained by the missing `/200` in the simulation. The Python port
+   exposes both as parameter sets (`RHO_STEP`/`INLIER_TOL` and `SIM_PRESET`) and there is a test
+   asserting they differ.
+2. **`iter.max = 30000` in the published script is too small.** It finds 3 of the 5 planes on the
+   experimental data. All results here use `max_iter=200000`.
+3. **The tail-regrow block (`cm_hough_grid_8.R:406-450`) is absent from the paper's description** of
+   Algorithm 4. It is in the code and runs unconditionally, but on the experimental data its loop
+   body never executes (all 320 points are already classified). It *does* execute in the simulation
+   study, where FNR ≠ 0. The port implements it, default-on, and there are tests that pin both the
+   on and off behaviour.
+
+### Files that exist but were not ported
+
+| R file | Status |
+|---|---|
+| `stomach_hough17_newton_square20.r` (§3.1.2, Figs 6–8) | **ported** — `simulate_circular.py`. Not ported from it: `plot.mode ∈ {4,5,8}` (3-D `rgl` renderings), `plot.mode ∈ {6,7}` (they error in R), and the dead `newton.cone`/`gra`/`hes` machinery. See `docs/code-paper-mapping.md`. |
+| `stomach_plane_anglediff14.r` | a different copy of the same material; not ported |
+| `spike_activation_time_plot2.R`, `BUTTER_example_plot_3.r` | figure-only scripts; their logic is folded into `examples/demo_pipeline.py` |
+| the gastric slow-wave analysis | not part of the method in the paper |
+
+### Documented bugs in the original, reproduced deliberately
+
+| # | Issue | Where | Reproduced? |
+|---|---|---|---|
+| 1 | Vote threshold is 9, not the 8 stated in the paper | `length > threshold*3` | yes |
+| 2 | `iter.max` too small to find all planes | R:265 | exposed via `max_iter`; examples pass 200000 |
+| 3 | `n̂ ← n̂·sign(n₁)` fails for `n₁ ≈ 0`, splitting a plane across φ ≈ 0° and 180° | R:279-281 | yes; documented as the main cause of high iteration counts |
+| 4 | `θ = asin(n₂/sin φ)` is ill-conditioned as φ → 0; `φ = 0` gives `NaN` | R:292 | yes, except that a deterministic key is substituted for the `NaN` key (geometry unaffected) |
+| 5 | `1:length(...)` degenerates to `1:0` when no plane is found; R then errors | R:353-358 | no — the port returns an empty result (documented at `rht.py:395`) |
+| 6 | FNR uses the wrong index (`num.true.neg = length(red.indices)`) | `fig5:369` | no — the port computes TN correctly; the variable is unused in R so nothing depends on it |
+| 7 | `make_synthetic_recording.R` time-column units | `TIME_UNITS_PER_MS <- 200` | no — corrected to ms, see section 4 |
+
+---
+
+## 7. Environment used for the numbers in this repository
+
+```
+Python 3.11.15
+numpy   2.4.6
+scipy   1.17.1
+pandas  3.0.5
+matplotlib 3.11.2
+pytest  9.1.1
+```
+
+`pandas` is used only for tabular I/O and the spike table. One pandas default differs from R in a
+way that silently corrupts results: `sort_values()` is **not stable**, while R's `order()` is. The
+experimental data has 47 tied `t` values covering 98 points; `spikes_to_table()` therefore always
+passes `kind="stable"`. Without it the RHT finds only 4 planes instead of 5, and replayed sampling
+traces index the wrong points — with no error raised.

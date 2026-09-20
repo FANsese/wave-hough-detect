@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wave-hough-detect"
+version = "0.1.0"
+description = "Robust wave origin detection from sensor-array data via randomized Hough transform and model fitting"
+readme = "README.md"
+requires-python = ">=3.10"
+# license = ...        ← 待定：发布前选定（见 README「许可证」一节）
+keywords = [
+    "hough-transform", "randomized-hough-transform", "wave-origin",
+    "source-localization", "microelectrode-array", "multielectrode-array",
+    "wavefront-fitting", "spike-detection",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.7"]
+test = ["pytest>=7.0"]
+
+[project.urls]
+Paper = "https://arxiv.org/abs/2609.13248"
+Source = "https://github.com/FANsese/wave-hough-detect"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
