@@ -1,9 +1,11 @@
 """
-阶段 4（仿真与评估）的单元测试。
+Unit tests for stage 4 (simulation and evaluation).
 
-仿真的随机数无法与 R 逐位对齐（见 simulate.py 模块文档），所以这里只检验
-**结构与统计性质**，以及那些一旦写错就会静默出错的约定：
-种子推导、稳定排序、z 标签、FPR/FNR 的口径。
+The generated datasets are statistically equivalent to the ones behind the
+figures but they are not the same numbers (see the module documentation of
+simulate.py), so only **structure and statistical properties** are checked here,
+together with the conventions that fail silently once they are written wrongly:
+seed derivation, stable ordering, the z label, and the definition of FPR/FNR.
 """
 
 from __future__ import annotations
@@ -22,8 +24,7 @@ from wave_hough_detect import (
 )
 
 
-# ── 种子推导 ─────────────────────────────────────────────────────────────
-
+# --- seed derivation ---
 def test_seed_derivation_is_reproducible():
     a = simulate_linear_wavefronts(seed_shift=7, **PAPER_2D_PARAMS)
     b = simulate_linear_wavefronts(seed_shift=7, **PAPER_2D_PARAMS)
@@ -36,24 +37,23 @@ def test_different_seed_shifts_give_different_datasets():
     assert not a.equals(b)
 
 
-def test_seed_from_params_matches_r_formula():
+def test_seed_from_params_formula():
     """
-    R: set.seed(SEED_BASE * 各参数连乘 + seed.shift)。
-    SEED_BASE = 101，参数取 §3.1.1 那一组：
+    The seed is SEED_BASE times the product of the parameters, plus seed_shift.
+    With SEED_BASE = 101 and the parameter set of §3.1.1:
         101 · 8 · 80 · 1 · 1 · 1 · 1 · 1 · 0.1 · 1 · 1 · 0.1 = 646.4
-    截断成 646；shift=1 → 647。
+    truncated to 646; shift=1 -> 647.
     """
     kw = dict(limit=8, time_max=80.0, ts=1.0, x=1.0, y=1.0, u_x=1.0, u_y=1.0,
               p=0.1, noise_freq=1.0, miu=1.0, sigma=0.1)
-    assert pytest.approx(646.4) == 101 * 8 * 80 * 0.1 * 0.1      # 先确认算式
+    assert pytest.approx(646.4) == 101 * 8 * 80 * 0.1 * 0.1      # confirm the arithmetic first
     assert seed_from_params(101, 0, **kw) == 646
     assert seed_from_params(101, 1, **kw) == 647
-    # 截断而不是四舍五入
+    # truncation, not rounding
     assert seed_from_params(101, 0, **{**kw, "sigma": 0.19}) == int(101 * 8 * 80 * 0.1 * 0.19)
 
 
-# ── 仿真数据结构 ─────────────────────────────────────────────────────────
-
+# --- structure of the simulated data ---
 def test_simulated_columns_and_labels():
     df = simulate_linear_wavefronts(seed_shift=1, **PAPER_2D_PARAMS)
     assert list(df.columns) == ["x", "y", "ts", "z"]
@@ -67,13 +67,14 @@ def test_simulated_coordinates_stay_on_the_grid():
     for col in ("x", "y"):
         assert df[col].min() >= 1
         assert df[col].max() <= limit
-        assert np.allclose(df[col], np.round(df[col]))     # 必须落在整数格点上
+        assert np.allclose(df[col], np.round(df[col]))     # must lie on integer grid points
 
 
 def test_simulated_times_within_horizon():
     """
-    噪声点在时间上是泊松流，可以从 0 附近就开始，所以整体的 ts 最小值
-    小于第一条波前的出发时刻；但**信号点**必须从 ts 参数出发。
+    Noise points form a Poisson stream in time and may start near 0, so the
+    overall minimum of ts falls below the departure time of the first wavefront;
+    the **signal points** however must start at the ts parameter.
     """
     df = simulate_linear_wavefronts(seed_shift=3, **PAPER_2D_PARAMS)
     assert df["ts"].min() >= 0.0
@@ -83,15 +84,17 @@ def test_simulated_times_within_horizon():
 
 def test_rows_are_sorted_by_time():
     """
-    ★ R 用 order()（稳定排序）。ts 是连续量但也有重复（同一条波前上多个点
-      可能同刻），行序必须与"稳定"这一约定一致，否则按下标索引会错位。
+    ★ Rows must be ordered by time with a stable sort. ts is a continuous
+      quantity but it does contain ties (several points of the same wavefront may
+      share an arrival time), and the row order must follow the "stable"
+      convention, otherwise indexing by position is shifted.
     """
     df = simulate_linear_wavefronts(seed_shift=4, **PAPER_2D_PARAMS)
     assert df["ts"].is_monotonic_increasing
 
 
 def test_missing_probability_actually_thins_the_signal():
-    """p 越大，信号点越少（论文 §3.1 的漏检机制）。"""
+    """The larger p, the fewer signal points (the missed-detection mechanism of §3.1)."""
     n = []
     for p in (0.0, 0.1, 0.5, 0.9):
         df = simulate_linear_wavefronts(seed_shift=1, p=p, **
@@ -103,8 +106,9 @@ def test_missing_probability_actually_thins_the_signal():
 
 def test_wavefront_count_follows_the_gap_parameter():
     """
-    gap 是波前间隔的卡方自由度：gap 越大，间隔越大，波前越少。
-    time_max=80 时 gap=30 大约给出 2–4 条波前。
+    gap is the chi-square degrees of freedom of the inter-wavefront interval: the
+    larger gap, the longer the intervals and the fewer the wavefronts. With
+    time_max=80, gap=30 gives about 2-4 wavefronts.
     """
     few = simulate_linear_wavefronts(seed_shift=1, gap=200.0, **
                                      {k: v for k, v in PAPER_2D_PARAMS.items()
@@ -115,8 +119,7 @@ def test_wavefront_count_follows_the_gap_parameter():
     assert (few["z"] == 1).sum() < (many["z"] == 1).sum()
 
 
-# ── FPR / FNR 口径 ───────────────────────────────────────────────────────
-
+# --- definition of FPR / FNR ---
 def test_detection_rates_counts():
     z = np.array([1, 1, 1, 0, 0, 0])
     pred = np.array([1, 1, 0, 1, 0, 0])
@@ -127,15 +130,17 @@ def test_detection_rates_counts():
 
 def test_paper_rate_denominator_is_all_points():
     """
-    ★ R 的 FPR/FNR 分母是【全部点】，不是各类点数（fig5_...R:371-372）。
-      这里把口径固定下来 —— 换成常规定义会与论文图 5 不可比。
+    ★ The denominator of FPR/FNR is the total number of points, not the size of
+      the respective class. The definition is pinned down here - switching to the
+      conventional one would make the rates incomparable with Figure 5 of the
+      paper.
     """
     z = np.array([1, 1, 1, 0, 0, 0])
     pred = np.array([1, 1, 0, 1, 0, 0])
     r = detection_rates(z, pred)
     assert r.false_positive_rate == pytest.approx(1 / 6)
     assert r.false_negative_rate == pytest.approx(1 / 6)
-    # 常规口径另算，互不影响
+    # the conventional definition is computed separately and does not interfere
     assert r.false_positive_rate_among_noise == pytest.approx(1 / 3)
     assert r.false_negative_rate_among_signal == pytest.approx(1 / 3)
 
@@ -148,12 +153,12 @@ def test_detection_rates_handles_empty_classes():
     assert r.false_negative_rate_among_signal == 0.0
 
 
-# ── 端到端评估 ───────────────────────────────────────────────────────────
-
+# --- end-to-end evaluation ---
 def test_evaluate_detection_uses_simulation_preset():
     """
-    ★ 仿真研究必须用 ρ 步长 0.5 / 容忍度 1.0。用真数据那组会一个平面都找不到
-      （或找到一堆垃圾平面），而不会报任何错。
+    ★ The simulation study must use a rho step of 0.5 and a tolerance of 1.0.
+      Using the real-data set instead finds no plane at all (or a pile of junk
+      planes) while raising no error whatsoever.
     """
     r = evaluate_detection(seed_shift=1)
     assert r.rates.n_points > 0
@@ -178,11 +183,10 @@ def test_detection_sweep_shape():
     assert {"seed_shift", "FPR", "FNR", "n_planes"} <= set(df.columns)
 
 
-# ── 合成 MEA 记录 ────────────────────────────────────────────────────────
-
+# --- synthetic MEA recording ---
 @pytest.fixture(scope="module")
 def synthetic_recording(tmp_path_factory):
-    """整份 9 秒 64 通道记录只生成一次（生成一次约 4 秒）。"""
+    """The full 9-second, 64-channel recording is generated once for the whole module (one generation takes about 4 seconds)."""
     path = tmp_path_factory.mktemp("rec") / "rec.csv"
     df, info = simulate_recording(path)
     return path, df, info
@@ -190,8 +194,9 @@ def synthetic_recording(tmp_path_factory):
 
 def test_simulate_recording_format(synthetic_recording):
     """
-    CSV 必须与论文 §3.2 的实验记录同格式：
-    1 列 time + 64 列 Ch01..Ch64，行数与 10 kHz / 9 s 对应。
+    The CSV must have the same format as the experimental recording of §3.2: one
+    time column plus 64 columns Ch01..Ch64, with a number of rows matching
+    10 kHz over 9 s.
     """
     path, df, info = synthetic_recording
     assert path.exists()
@@ -204,24 +209,26 @@ def test_simulate_recording_format(synthetic_recording):
 
 def test_simulate_recording_time_column_is_milliseconds(synthetic_recording):
     """
-    ★★ 最隐蔽的一个坑：time 列必须是【毫秒】。
-      写成"毫秒 × 200"会让管线内部的霍夫尺度变成几千，与 x,y ∈ [1,8]
-      差三个数量级，于是找到的全是垃圾平面（实测 v≈0、t0≈±2e7）。
+    ★★ The most insidious pitfall: the time column must be in milliseconds.
+      Writing it in units of 1/200 ms moves the Hough-scale time three orders of
+      magnitude away from the grid coordinates x, y in [1, 8], so every plane that
+      is found is junk (measured on that convention the pipeline reports v ~ 0 and
+      t0 ~ +-2e7).
 
-      R 版 make_synthetic_recording.R 里默认的 TIME_UNITS_PER_MS <- 200
-      正是这个错误；Python 版默认改成 1.0。
+      The default time_units_per_ms of this implementation is 1.0.
     """
     _, df, info = synthetic_recording
     assert info["time_units_per_ms"] == 1.0
     t = df["time"].to_numpy()
     assert t[0] == pytest.approx(0.0)
-    assert t[-1] == pytest.approx(8999.9, abs=0.05)          # 9000 ms 内的最后一个采样
+    assert t[-1] == pytest.approx(8999.9, abs=0.05)          # last sample within 9000 ms
     assert np.allclose(np.diff(t[:100]), 0.1)                # 10 kHz → 0.1 ms
 
 
 def test_simulate_recording_spikes_are_negative_going(synthetic_recording):
     """
-    胞外场电位是负向偏转，管线用 which.min 找尖峰 —— 极性反了就一个都检不出。
+    Extracellular field potentials are negative deflections and the pipeline
+    locates spikes at the minimum - reversed polarity would detect nothing at all.
     """
     _, df, _ = synthetic_recording
     ch = df["Ch01"].to_numpy()
@@ -230,7 +237,7 @@ def test_simulate_recording_spikes_are_negative_going(synthetic_recording):
 
 
 def test_simulate_recording_reports_ground_truth(synthetic_recording):
-    """info 里必须带回真值，否则无法做"已知真值"的端到端判定。"""
+    """info must carry the ground truth back, otherwise the "known truth" end-to-end check is impossible."""
     _, _, info = synthetic_recording
     assert info["source_x0"] == -3.7
     assert info["source_y0"] == -50.0
@@ -241,8 +248,9 @@ def test_simulate_recording_reports_ground_truth(synthetic_recording):
 
 def test_time_column_scale_is_right(synthetic_recording):
     """
-    时间列用 1/200 ms 会让霍夫尺度错 200 倍。这里不复现完整管线，
-    只固定住"错的设置会得到错的霍夫尺度"这个事实。
+    A time column in units of 1/200 ms would put the Hough scale off by a factor
+    of 200. The full pipeline is not reproduced here; only the fact that a wrong
+    setting yields a wrong Hough scale is pinned down.
     """
     from wave_hough_detect import detect_all_channels, load_recording, spikes_to_table
 
@@ -251,5 +259,5 @@ def test_time_column_scale_is_right(synthetic_recording):
     st, _ = detect_all_channels(rec)
     sp = spikes_to_table(st, rec.channels)
     t = sp["t"].to_numpy()
-    # 霍夫尺度必须与 x, y ∈ [1, 8] 同量级
-    assert t.max() < 200.0, "time 列不是毫秒，霍夫尺度已经跑偏"
+    # the Hough scale must have the same order of magnitude as x, y in [1, 8]
+    assert t.max() < 200.0, "the time column is not in milliseconds, the Hough scale has drifted off"

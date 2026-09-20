@@ -1,21 +1,24 @@
 """
-仿真示例（§3.1.2）：96×96 圆波前 —— 估计精度随噪声/漏检/测量误差的变化
+Simulation example (§3.1.2): 96×96 circular wavefront — how the estimation
+accuracy varies with noise / missed detections / measurement error
 
-对应论文图 6–8。与 ``demo_simulation.py``（§3.1.1，8×8 线性波前，图 2–5）是
-两套不同的仿真，不要混在一起看。
+This corresponds to paper Figs. 6–8. It is a DIFFERENT study from
+``demo_simulation.py`` (§3.1.1, 8×8 linear wavefront, Figs. 2–5); the two must
+not be mixed up.
 
-真值是代码自己设定的：源点 (48, 48)、速度 1、激发时刻 2，即
+The ground truth is set by the code itself: source (48, 48), speed 1, firing
+time 2, i.e.
 
     t = √((x−48)² + (y−48)²) / 1 + 2 + ε
 
-所以每个估计值都能和真值直接比较。
+so every estimate can be compared with the ground truth directly.
 
-运行：
-    python examples/demo_simulation_circular.py                # 按 R 的重复数（~4 分钟）
-    python examples/demo_simulation_circular.py --replicates 2 # 快跑（~30 秒）
+Run:
+    python examples/demo_simulation_circular.py                # default replicate counts (~4 min)
+    python examples/demo_simulation_circular.py --replicates 2 # quick run (~30 s)
 
-输出：
-    examples/out/circ_fig6_wavefront.png      仿真数据 + 拟合出的圆波前
+Output:
+    examples/out/circ_fig6_wavefront.png       simulated data + fitted circular wavefront
     examples/out/circ_fig7_accuracy_vs_snr.png
     examples/out/circ_fig8_accuracy_vs_p.png
     examples/out/circ_sigma_accuracy.png
@@ -36,7 +39,7 @@ _OUT.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(_OUT / ".mplcache"))
 os.environ.setdefault("XDG_CACHE_HOME", str(_OUT / ".cache"))
 
-# 允许不安装直接运行：把仓库的 src/ 加入搜索路径。
+# Allow running without installing: add the repository src/ to the search path.
 _SRC = _HERE.parent / "src"
 if _SRC.is_dir():
     sys.path.insert(0, str(_SRC))
@@ -53,7 +56,7 @@ from wave_hough_detect import (                          # noqa: E402
     simulate_circular_wavefronts,
 )
 
-#: 要跟踪的四个量：显示名、真值、估计列名
+#: the four quantities that are tracked: display name, ground truth, result column
 QUANTITIES = [("x₀", "x0", CIRCULAR_TRUTH["x0"]),
               ("y₀", "y0", CIRCULAR_TRUTH["y0"]),
               ("v", "v", CIRCULAR_TRUTH["v"]),
@@ -68,29 +71,31 @@ def hr(t=""):
         print("=" * 78)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-#  ① 一次仿真 + 拟合（论文图 6 风格）
-# ══════════════════════════════════════════════════════════════════════════
+# ==========================================================================
+#  ① One simulation + fit (paper Fig. 6 style)
+# ==========================================================================
 
 def part_one() -> pd.DataFrame:
-    hr("① 一次仿真 + 圆波前拟合（论文图 6 风格）")
+    hr("① One simulation + circular-wavefront fit (paper Fig. 6 style)")
     df = simulate_circular_wavefronts(0, **PAPER_CIRCULAR_PARAMS)
     est = evaluate_circular(0)
     sig = df[df.z == 1]
 
-    print(f"  仿真参数 λ_n={PAPER_CIRCULAR_PARAMS['noise_freq']}, "
+    print(f"  Simulation parameters λ_n={PAPER_CIRCULAR_PARAMS['noise_freq']}, "
           f"p={PAPER_CIRCULAR_PARAMS['p']}, σ={PAPER_CIRCULAR_PARAMS['sigma']}")
-    print(f"  {len(df)} 点（信号 {est.n_signal} = 96×96 全部电极，噪声 {est.n_noise}）")
-    print(f"  真值   x₀={CIRCULAR_TRUTH['x0']:.4f}  y₀={CIRCULAR_TRUTH['y0']:.4f}  "
+    print(f"  {len(df)} points (signal {est.n_signal} = all 96×96 electrodes, "
+          f"noise {est.n_noise})")
+    print(f"  truth  x₀={CIRCULAR_TRUTH['x0']:.4f}  y₀={CIRCULAR_TRUTH['y0']:.4f}  "
           f"v={CIRCULAR_TRUTH['v']:.4f}  t₀={CIRCULAR_TRUTH['t0']:.4f}")
-    print(f"  估计   x₀={est.x0:.4f}  y₀={est.y0:.4f}  "
-          f"v={est.v:.4f}  t₀={est.t0:.4f}   （{est.n_iters} 轮收敛）")
-    print(f"  相对误差 " + "  ".join(
+    print(f"  fit    x₀={est.x0:.4f}  y₀={est.y0:.4f}  "
+          f"v={est.v:.4f}  t₀={est.t0:.4f}   (converged in {est.n_iters} "
+          f"iterations)")
+    print(f"  relative error " + "  ".join(
         f"{k}={v:.2e}" for k, v in est.rel_error.items()))
-    print(f"  R²={est.r2:.6f}   ← 注意：这是对**信号+噪声全部点**算的，"
-          f"噪声占 {100*est.n_noise/est.n_points:.1f}%")
-    print(f"         真值参数下 R²(仅信号) = 1.0000000000，"
-          f"所以 0.95 不代表模型不准")
+    print(f"  R²={est.r2:.6f}   ← note: this is computed over **all signal + "
+          f"noise** points; noise makes up {100*est.n_noise/est.n_points:.1f}%")
+    print(f"         with the true parameters R²(signal only) = 1.0000000000, so "
+          f"0.95 does not mean the model is inaccurate")
 
     fig = plt.figure(figsize=(14, 6))
     ax = fig.add_subplot(121, projection="3d")
@@ -100,7 +105,7 @@ def part_one() -> pd.DataFrame:
     if len(noi):
         ax.scatter(noi.x, noi.y, noi.ts, s=8, c="0.4",
                    label=f"noise  n={est.n_noise}", depthshade=False)
-    # 拟合出的圆波前：t = √((x−x₀)²+(y−y₀)²)/v + t₀
+    # the fitted circular wavefront: t = √((x−x₀)²+(y−y₀)²)/v + t₀
     g = np.arange(1, 97)
     gx, gy = np.meshgrid(g, g, indexing="ij")
     surf = np.hypot(gx - est.x0, gy - est.y0) / est.v + est.t0
@@ -111,7 +116,8 @@ def part_one() -> pd.DataFrame:
                  f"v={est.v:.3f}")
     ax.legend(fontsize=8, loc="upper left"); ax.view_init(elev=20, azim=-60)
 
-    # 按距离重排后看残差：模型正确时应当只剩噪声
+    # residuals after reordering by distance: with a correct model only the
+    # noise should be left
     ax2 = fig.add_subplot(122)
     d = np.hypot(sig.x - est.x0, sig.y - est.y0)
     pred = d / est.v + est.t0
@@ -133,18 +139,18 @@ def part_one() -> pd.DataFrame:
     return pd.DataFrame([est.as_dict()])
 
 
-# ══════════════════════════════════════════════════════════════════════════
-#  ② 精度 vs 噪声率 λ_n（论文图 7）
-# ══════════════════════════════════════════════════════════════════════════
+# ==========================================================================
+#  ② Accuracy vs noise rate λ_n (paper Fig. 7)
+# ==========================================================================
 
 def plot_accuracy(df: pd.DataFrame, xcol: str, xlabel: str, logx: bool,
                   title: str, out_name: str) -> None:
     """
-    画「四个估计量 vs 扫描变量」。
+    Plot "the four estimates vs the sweep variable".
 
-    ★ R 的 ``relerror.plot`` 三个活跃调用都传 ``plot.value = TRUE``（R:891/911/931），
-      所以它画的是**绝对估计值**，不是相对误差 —— 函数名是名不副实的。
-      这里照它的实际行为画绝对值，并把真值画成水平虚线。
+    ★ This plots the **absolute estimates**, not the relative error (the
+      relative errors are reported in the console table instead), and draws the
+      ground truth as a horizontal dashed line.
     """
     fig, axes = plt.subplots(1, 4, figsize=(17, 4.2))
     for ax, (disp, col, truth) in zip(axes, QUANTITIES):
@@ -168,12 +174,13 @@ def plot_accuracy(df: pd.DataFrame, xcol: str, xlabel: str, logx: bool,
 
 
 def part_sweep(plot_mode: int, n_rep: int | None) -> pd.DataFrame:
-    hr(f"② 精度扫描：plot_mode={plot_mode}（论文图 "
-       f"{ {1: '7', 2: '8', 3: 'σ 曲线'}[plot_mode] }）")
+    hr(f"② Accuracy sweep: plot_mode={plot_mode} (paper Fig. "
+       f"{ {1: '7', 2: '8', 3: 'sigma curve'}[plot_mode] })")
     t0 = time.time()
     df = accuracy_sweep(plot_mode, n_replicates=n_rep)
     dt = time.time() - t0
-    print(f"  {len(df)} 次「仿真 + 拟合」，耗时 {dt:.1f} s（{1000*dt/len(df):.0f} ms/次）")
+    print(f"  {len(df)} 'simulate + fit' runs in {dt:.1f} s "
+          f"({1000*dt/len(df):.0f} ms/run)")
 
     var = df["variable"].iloc[0]
     summ = df.groupby("scan_value").agg(
@@ -182,18 +189,20 @@ def part_sweep(plot_mode: int, n_rep: int | None) -> pd.DataFrame:
         rel_v=("rel_v", "mean"), rel_t0=("rel_t0", "mean"),
         rel_x0=("rel_x0", "mean"), rel_y0=("rel_y0", "mean"))
     print()
-    print(f"  {'λ/参数':>10s} {'snr':>9s} {'噪声数':>8s} {'x₀误差':>10s} "
-          f"{'y₀误差':>10s} {'v 误差':>10s} {'t₀误差':>10s}")
-    print("  " + "-" * 74)
+    print(f"  {'λ/param':>10s} {'snr':>9s} {'n_noise':>8s} {'x₀ error':>10s} "
+          f"{'y₀ error':>10s} {'v error':>10s} {'t₀ error':>10s}")
+    print("  " + "-" * 73)
     for val, r in summ.iterrows():
         print(f"  {val:10.4g} {r['snr']:9.2f} {r['n_noise']:8.0f} "
               f"{r['rel_x0']:10.2e} {r['rel_y0']:10.2e} "
               f"{r['rel_v']:10.2e} {r['rel_t0']:10.2e}")
 
     print()
-    print("  ★ 可读性：源点位置 (x₀, y₀) 在所有噪声水平下都很稳（相对误差 ~1e-3），")
-    print("     而 v 与 t₀ 会一起漂 —— 噪声点多时，拟合靠「放慢速度 + 推迟激发」")
-    print("     去迁就那些离群点。这正是图 7 想展示的退化方式。")
+    print("  ★ Readability: the source position (x₀, y₀) is very stable at every")
+    print("     noise level (relative error ~1e-3), while v and t₀ drift together")
+    print("     — with many noise points the fit slows the wave down and delays")
+    print("     its onset in order to accommodate those outliers. That is exactly")
+    print("     the degradation mode Fig. 7 is meant to show.")
 
     df.to_csv(_OUT / f"circ_sweep_mode{plot_mode}.csv", index=False)
     print(f"  → {_OUT/f'circ_sweep_mode{plot_mode}.csv'}")
@@ -222,16 +231,18 @@ def main(n_rep: int | None) -> int:
     part_sweep(3, n_rep)
 
     hr()
-    print(f" ✅ 全部完成，总耗时 {time.time()-T0:.1f} s")
-    print(f"    图: {_OUT}/circ_fig6_wavefront.png")
-    print(f"        {_OUT}/circ_fig7_accuracy_vs_snr.png")
-    print(f"        {_OUT}/circ_fig8_accuracy_vs_p.png")
-    print(f"        {_OUT}/circ_sigma_accuracy.png")
+    print(f" ✅ All done, total elapsed {time.time()-T0:.1f} s")
+    print(f"    Figures: {_OUT}/circ_fig6_wavefront.png")
+    print(f"             {_OUT}/circ_fig7_accuracy_vs_snr.png")
+    print(f"             {_OUT}/circ_fig8_accuracy_vs_p.png")
+    print(f"             {_OUT}/circ_sigma_accuracy.png")
     print()
-    print("    ★ 重复数是【独立】的：每个重复用了不同的 seed_shift。")
-    print("      R 的 stomach.sim2d 没有 seed.shift，而且 p=0 时种子恒为 0，")
-    print("      所以 R 的 mode 1/3「重复」共享同一条随机数流，曲线被人为抹平。")
-    print("      想复现那个效应：accuracy_sweep(mode, independent_replicates=False)")
+    print("    ★ The replicates are INDEPENDENT: every replicate uses a different")
+    print("      seed_shift. Passing independent_replicates=False instead gives")
+    print("      all replicates of a grid point the same seed_shift, so they are")
+    print("      no longer independent and the curves come out artificially flat.")
+    print("      To see that effect:")
+    print("        accuracy_sweep(mode, independent_replicates=False)")
     print()
     return 0
 
@@ -241,8 +252,9 @@ def _cli() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--replicates", type=int, default=None,
-                    help="每个网格点的重复次数；默认用 R 提交时的值"
-                         "（mode 1→23、mode 2→9、mode 3→10）")
+                    help="replicates per grid point; the defaults are the "
+                         "values used for the reported results "
+                         "(mode 1→23, mode 2→9, mode 3→10)")
     a = ap.parse_args()
     return main(a.replicates)
 

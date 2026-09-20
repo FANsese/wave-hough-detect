@@ -1,17 +1,21 @@
 """
-数据文件定位
+Locating the data file
 
-论文 §3.2 用的 MEA 记录不随本仓库分发（见 ``data/README.md``）。
-本模块按优先级在若干常见位置查找它，让示例脚本不必硬编码路径。
+The MEA recording used in section 3.2 is not distributed with this repository
+(see ``data/README.md``). This module looks for it in a few common places, in a
+fixed order of priority, so that the example scripts do not need hard-coded
+paths.
 
-查找顺序
---------
-1. 显式传入的路径（命令行 ``--data``）
-2. 环境变量 ``WHD_DATA``
-3. 当前工作目录及其父目录下的 ``data/<文件名>`` 或直接 ``<文件名>``
-4. 包所在目录往上三层的 ``data/<文件名>``
+Lookup order
+------------
+1. An explicitly passed path (the command-line option ``--data``)
+2. The environment variable ``WHD_DATA``
+3. ``data/<file name>`` or a bare ``<file name>`` under the current working
+   directory and its parent directories
+4. ``data/<file name>`` three levels above the directory holding the package
 
-都找不到时抛出带说明的 ``FileNotFoundError``。
+When nothing is found, a ``FileNotFoundError`` carrying an explanation is
+raised.
 """
 
 from __future__ import annotations
@@ -40,16 +44,17 @@ def _candidates(name: str, explicit: str | Path | None) -> list[Path]:
 def find_recording(explicit: str | Path | None = None,
                    name: str = DEFAULT_NAME) -> Path:
     """
-    定位 MEA 记录文件，返回其路径。
+    Locate the MEA recording file and return its path.
 
-    参数
-    ----
-    explicit : 显式路径。给目录则在该目录下按 ``name`` 查找。
-    name     : 数据文件名，默认是论文 §3.2 用的那份。
+    Parameters
+    ----------
+    explicit : explicit path. If a directory is given, ``name`` is looked up
+               inside that directory.
+    name     : data file name; by default the one used in section 3.2.
 
-    异常
-    ----
-    FileNotFoundError : 所有候选位置都没有该文件。
+    Raises
+    ------
+    FileNotFoundError : the file is absent from every candidate location.
     """
     for c in _candidates(name, explicit):
         p = c / name if c.is_dir() else c
@@ -58,15 +63,17 @@ def find_recording(explicit: str | Path | None = None,
 
     tried = "\n".join(f"    {c}" for c in _candidates(name, explicit))
     raise FileNotFoundError(
-        f"找不到数据文件 {name}\n"
-        f"已尝试以下位置：\n{tried}\n\n"
-        "该记录是合作实验室的实验数据，不随仓库分发（见 data/README.md）。\n"
-        "可用三种方式指定：\n"
-        "  1. 命令行  --data /path/to/recording.csv\n"
-        "  2. 环境变量  export WHD_DATA=/path/to/recording.csv\n"
-        "  3. 放到仓库的 data/ 目录下\n\n"
-        "若只是想试跑管线，不需要任何实验数据：\n"
+        f"Data file not found: {name}\n"
+        f"Tried the following locations:\n{tried}\n\n"
+        "This recording is experimental data from a collaborating laboratory and\n"
+        "is not distributed with the repository (see data/README.md).\n"
+        "There are three ways to point the pipeline at it:\n"
+        "  1. command line        --data /path/to/recording.csv\n"
+        "  2. environment         export WHD_DATA=/path/to/recording.csv\n"
+        "  3. place it in the data/ directory of the repository\n\n"
+        "If you only want to try the pipeline out, no experimental data is needed:\n"
         "    python examples/demo_simulation.py\n"
-        "它会用 simulate_recording() 现生成一份同格式的 64 通道合成记录并跑完整管线，\n"
-        "而且结果会与它自己设定的真值逐项对照。"
+        "That script generates a 64-channel synthetic recording in the same format\n"
+        "with simulate_recording() and runs the whole pipeline on it, checking every\n"
+        "result against the ground truth it set itself."
     )

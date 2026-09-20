@@ -1,18 +1,23 @@
 """
-仿真示例：论文 §3.1 的检测性能（图 2–5 风格）+ 合成记录上的完整管线
+Simulation example: the detection performance of paper §3.1 (Figs. 2–5 style)
+plus the full pipeline on a synthetic recording
 
-这个脚本回答一个问题：**没有实验数据，这份代码还能证明什么？**
+This script answers one question: **without experimental data, what can this
+code still prove?**
 
-  ① 在已知真值的仿真上跑 RHT → 算出 FPR / FNR（论文图 5）
-  ② 把找到的平面画出来，与真值对照（论文图 2/3/4 风格）
-  ③ 生成一份格式与真数据相同的合成 MEA 记录 → 跑通阶段 1→2→3 整条管线，
-     证明拿不到实验记录时管线同样可以端到端运行
+  ① Run the RHT on a simulation with known ground truth → compute FPR / FNR
+     (paper Fig. 5)
+  ② Draw the planes that were found and compare them with the ground truth
+     (paper Figs. 2/3/4 style)
+  ③ Generate a synthetic MEA recording in the same format as the real data →
+     run the whole stage 1→2→3 pipeline, showing that the pipeline also runs
+     end to end when no experimental recording is available
 
-运行：
-    python examples/demo_simulation.py                 # 100 个随机种子
-    python examples/demo_simulation.py --seeds 20      # 快一点
+Run:
+    python examples/demo_simulation.py                 # 100 random seeds
+    python examples/demo_simulation.py --seeds 20      # faster
 
-输出：
+Output:
     examples/out/sim_fig2_ground_truth.png
     examples/out/sim_fig3_classification.png
     examples/out/sim_fig4_planes.png
@@ -35,8 +40,8 @@ _OUT_EARLY.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(_OUT_EARLY / ".mplcache"))
 os.environ.setdefault("XDG_CACHE_HOME", str(_OUT_EARLY / ".cache"))
 
-# 允许不安装直接运行：把仓库的 src/ 加入搜索路径。
-# 若已 `pip install -e .`，这一句无副作用。
+# Allow running without installing: add the repository src/ to the search path.
+# If the package was already installed with `pip install -e .`, this is a no-op.
 _SRC = _HERE.parent / "src"
 if _SRC.is_dir():
     sys.path.insert(0, str(_SRC))
@@ -87,9 +92,10 @@ def md_table(df: pd.DataFrame, fmt: str = ".4f") -> str:
 
 def draw_planes(ax, result, n_grid: int = 8) -> None:
     """
-    在 3D 图上画出 RHT 找到的平面（对应 R 的 draw.plane()，fig5_...R:268-277）。
+    Draw the planes found by the RHT on a 3D axes.
 
-    平面由 ``n1·x + n2·y + n3·t = ρ`` 给定，在网格四角解出 t 即得四个顶点。
+    Each plane is given by ``n1·x + n2·y + n3·t = ρ``; solving for t at the four
+    corners of the grid gives the four vertices.
     """
     lo, hi = 1.0, float(n_grid)
     u = np.array([lo, hi])
@@ -107,32 +113,33 @@ def draw_planes(ax, result, n_grid: int = 8) -> None:
                         alpha=0.30, color=f"C{k % 10}", linewidth=0)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-#  ① 一次仿真 + 检测：真值、四色分类、找到的平面
-# ══════════════════════════════════════════════════════════════════════════
+# ==========================================================================
+#  ① One simulation + detection: ground truth, four-colour classification,
+#     the planes that were found
+# ==========================================================================
 
 def part_detection(seed_shift: int) -> None:
-    hr("① 一次仿真 + RHT（论文 §3.1.1 / 图 2–4 风格）")
+    hr("① One simulation + RHT (paper §3.1.1 / Figs. 2–4 style)")
     t0 = time.time()
     res = evaluate_detection(seed_shift)
     cls = res.classified()
-    print(f"  仿真参数: {PAPER_2D_PARAMS}")
-    print(f"  点数 {res.rates.n_points}（信号 {res.rates.n_signal}，"
-          f"噪声 {res.rates.n_noise}）")
-    print(f"  RHT 找到 {res.rates.n_planes} 个平面，耗时 {time.time()-t0:.2f} s")
+    print(f"  Simulation parameters: {PAPER_2D_PARAMS}")
+    print(f"  Points {res.rates.n_points} (signal {res.rates.n_signal}, "
+          f"noise {res.rates.n_noise})")
+    print(f"  RHT found {res.rates.n_planes} planes in {time.time()-t0:.2f} s")
     print(f"  TP={res.rates.n_true_pos}  FP={res.rates.n_false_pos}  "
           f"FN={res.rates.n_false_neg}  TN={res.rates.n_true_neg}")
     print(f"  FPR={res.rates.false_positive_rate:.4f}  "
           f"FNR={res.rates.false_negative_rate:.4f}"
-          f"   ← 论文口径（分母 = 全部点）")
+          f"   ← paper definition (denominator = all points)")
     print(f"  FPR={res.rates.false_positive_rate_among_noise:.4f}  "
           f"FNR={res.rates.false_negative_rate_among_signal:.4f}"
-          f"   ← 常规口径（分母 = 各类点数）")
+          f"   ← conventional definition (denominator = points of each class)")
 
     sig = cls[cls["z"] == 1]
     noi = cls[cls["z"] == 0]
 
-    # ── 图 2：真值（论文图 2 风格）─────────────────────────────────────
+    # -- Fig. 2: ground truth (paper Fig. 2 style) ------------------------
     fig = plt.figure(figsize=(13, 5.6))
     ax = fig.add_subplot(121, projection="3d")
     ax.scatter(sig["x"], sig["y"], sig["ts"], s=16, c="tab:green",
@@ -155,10 +162,10 @@ def part_detection(seed_shift: int) -> None:
     plt.close(fig)
     print(f"  → {OUT/'sim_fig2_ground_truth.png'}")
 
-    # ── 图 3：四色分类（论文图 3 风格，对应 R 的 stomach.plot2d）───────
+    # -- Fig. 3: four-colour classification (paper Fig. 3 style) ----------
     fig = plt.figure(figsize=(13, 5.6))
     ax = fig.add_subplot(121, projection="3d")
-    for key in CLASS_ORDER:                    # 与 R 的绘制顺序一致
+    for key in CLASS_ORDER:                    # fixed drawing order: TP, FP, FN, TN
         sub = cls[cls["class"] == key]
         if len(sub):
             ax.scatter(sub["x"], sub["y"], sub["ts"], s=16,
@@ -184,7 +191,7 @@ def part_detection(seed_shift: int) -> None:
     plt.close(fig)
     print(f"  → {OUT/'sim_fig3_classification.png'}")
 
-    # ── 图 4：找到的平面（论文图 4 风格，对应 R 的 draw.plane）──────────
+    # -- Fig. 4: the planes that were found (paper Fig. 4 style) ----------
     fig = plt.figure(figsize=(13, 5.6))
     ax = fig.add_subplot(121, projection="3d")
     ax.scatter(noi["x"], noi["y"], noi["ts"], s=12, c="0.78",
@@ -214,12 +221,12 @@ def part_detection(seed_shift: int) -> None:
     print(f"  → {OUT/'sim_fig4_planes.png'}")
 
 
-# ══════════════════════════════════════════════════════════════════════════
-#  ② FPR / FNR 分布（论文图 5）
-# ══════════════════════════════════════════════════════════════════════════
+# ==========================================================================
+#  ② FPR / FNR distribution (paper Fig. 5)
+# ==========================================================================
 
 def part_sweep(n_seeds: int) -> pd.DataFrame:
-    hr(f"② FPR / FNR 随随机种子的分布（论文图 5，{n_seeds} 个种子）")
+    hr(f"② FPR / FNR across random seeds (paper Fig. 5, {n_seeds} seeds)")
     t0 = time.time()
     rows = []
     for s in range(n_seeds):
@@ -231,17 +238,19 @@ def part_sweep(n_seeds: int) -> pd.DataFrame:
     df.to_csv(OUT / "sim_detection_rates.csv", index=False)
 
     dt = time.time() - t0
-    print(f"  完成 {n_seeds} 次，总耗时 {dt:.0f} s（平均 {1000 * dt / n_seeds:.0f} ms/次）")
+    print(f"  {n_seeds} runs completed, total {dt:.0f} s "
+          f"(mean {1000 * dt / n_seeds:.0f} ms/run)")
     print()
-    print(f"  {'量':24s} {'均值':>9s} {'标准差':>9s} {'中位数':>9s} {'最大':>9s}")
-    print("  " + "-" * 64)
-    for col, name in [("FPR", "FPR  (论文口径)"),
-                      ("FNR", "FNR  (论文口径)"),
-                      ("FPR_among_noise", "FPR  (常规口径)"),
-                      ("FNR_among_signal", "FNR  (常规口径)"),
-                      ("n_planes", "找到的平面数")]:
+    print(f"  {'quantity':30s} {'mean':>9s} {'sd':>9s} {'median':>9s} "
+          f"{'max':>9s}")
+    print("  " + "-" * 70)
+    for col, name in [("FPR", "FPR  (paper definition)"),
+                      ("FNR", "FNR  (paper definition)"),
+                      ("FPR_among_noise", "FPR  (conventional definition)"),
+                      ("FNR_among_signal", "FNR  (conventional definition)"),
+                      ("n_planes", "planes found by RHT")]:
         v = df[col].to_numpy(dtype=float)
-        print(f"  {name:24s} {v.mean():9.4f} {v.std(ddof=1):9.4f} "
+        print(f"  {name:30s} {v.mean():9.4f} {v.std(ddof=1):9.4f} "
               f"{np.median(v):9.4f} {v.max():9.4f}")
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.6))
@@ -269,38 +278,43 @@ def part_sweep(n_seeds: int) -> pd.DataFrame:
     return df
 
 
-# ══════════════════════════════════════════════════════════════════════════
-#  ③ 合成 MEA 记录上跑完整管线
-# ══════════════════════════════════════════════════════════════════════════
+# ==========================================================================
+#  ③ Run the whole pipeline on a synthetic MEA recording
+# ==========================================================================
 
 def part_synthetic_pipeline(report) -> list[str]:
-    hr("③ 合成 MEA 记录 → 阶段 1→2→3 全管线（已知真值，可判定对错）")
+    hr("③ Synthetic MEA recording → full stage 1→2→3 pipeline "
+       "(known ground truth, so the result can be judged)")
     rec_path = OUT / "synthetic_recording.csv"
     t0 = time.time()
     _, info = simulate_recording(rec_path)
     truth_waves = np.asarray(info["wave_times_ms"])
-    print(f"  生成 {rec_path.name}: {info['n_samples']} 行 x "
-          f"{info['n_channels'] + 1} 列，{info['duration_ms'] / 1000:.1f} s @ "
+    print(f"  Wrote {rec_path.name}: {info['n_samples']} rows x "
+          f"{info['n_channels'] + 1} columns, {info['duration_ms'] / 1000:.1f} s @ "
           f"{info['sample_rate_hz']:.0f} Hz")
-    print(f"  真值：源点 (x0, y0) = ({info['source_x0']}, {info['source_y0']})，"
-          f"v = {info['speed']} 格/ms，{len(truth_waves)} 条波前")
-    print(f"        源点激发时刻 (ms): {info['wave_times_ms']}")
-    print(f"        最大传播时延 {info['max_delay_ms']:.0f} ms")
-    print("  ★ time 列按【毫秒】写，与实验记录一致。这一步不能改成 1/200 ms ——")
-    print("    管线的 ts/200 是把时间压到与 x,y 同量级的【尺度调理】，不是单位换算。")
+    print(f"  Ground truth: source (x0, y0) = ({info['source_x0']}, "
+          f"{info['source_y0']}), v = {info['speed']} cells/ms, "
+          f"{len(truth_waves)} wavefronts")
+    print(f"        source firing times (ms): {info['wave_times_ms']}")
+    print(f"        maximum propagation delay {info['max_delay_ms']:.0f} ms")
+    print("  ★ The time column is written in MILLISECONDS, matching the "
+          "experimental records.")
+    print("    This step must not be changed to 1/200 ms — the pipeline's ts/200")
+    print("    is a SCALING step that brings time onto the same order as x,y,")
+    print("    not a unit conversion.")
 
     rec = load_recording(rec_path)
     spike_times, _ = detect_all_channels(rec)
     counts = np.array([s.size for s in spike_times])
-    print(f"\n  阶段 1  检出 {counts.sum()} 个尖峰"
-          f"（每通道 {counts.min()}–{counts.max()}，"
-          f"波前 {len(truth_waves)} 条）")
+    print(f"\n  Stage 1  detected {counts.sum()} spikes "
+          f"({counts.min()}–{counts.max()} per channel, "
+          f"{len(truth_waves)} wavefronts)")
 
     sp = spikes_to_table(spike_times, rec.channels)
     pts = sp[["x", "y", "t"]].to_numpy(dtype=float)
     res = hough_plane(pts, vote_threshold=8, max_iter=200000,
                       min_detectors=40, seed=1)
-    print("  阶段 2  " + res.summary().replace("\n", "\n          "))
+    print("  Stage 2  " + res.summary().replace("\n", "\n           "))
 
     order = np.argsort(sp["t"].to_numpy(), kind="stable")
     arr = build_result_array(sp["x"].to_numpy()[order],
@@ -313,15 +327,15 @@ def part_synthetic_pipeline(report) -> list[str]:
         fits.append((k, fit_circular(p), fit_linear(p)))
     fits.sort(key=lambda f: f[1].t0)
 
-    print("  阶段 3  逐平面拟合（按 t0 升序重排）：")
-    print(f"    {'平面':>4s} {'圆 x0':>8s} {'圆 y0':>9s} {'圆 v':>7s} "
-          f"{'圆 t0':>9s} {'真值 t0':>9s} {'Δ t0':>7s} {'R²_circ':>9s}")
+    print("  Stage 3  per-plane fits (re-sorted by ascending t0):")
+    print(f"    {'plane':>5s} {'circ x0':>8s} {'circ y0':>9s} {'circ v':>7s} "
+          f"{'circ t0':>9s} {'true t0':>9s} {'Δ t0':>7s} {'R²_circ':>9s}")
     for i, (_, c, l) in enumerate(fits, 1):
         tw = truth_waves[i - 1] if i <= truth_waves.size else float("nan")
-        print(f"    {i:>4d} {c.x0:8.2f} {c.y0:9.2f} {c.v:7.3f} {c.t0:9.2f} "
+        print(f"    {i:>5d} {c.x0:8.2f} {c.y0:9.2f} {c.v:7.3f} {c.t0:9.2f} "
               f"{tw:9.2f} {c.t0 - tw:7.2f} {c.r2:9.6f}")
 
-    # ── 逐项判定 ──────────────────────────────────────────────────────
+    # -- Per-item checks ---------------------------------------------------
     failures: list[str] = []
     x0s = np.array([c.x0 for _, c, _ in fits])
     y0s = np.array([c.y0 for _, c, _ in fits])
@@ -329,63 +343,74 @@ def part_synthetic_pipeline(report) -> list[str]:
     t0s = np.array([c.t0 for _, c, _ in fits])
 
     checks = [
-        ("平面数 = 波前数",
+        ("number of planes = number of wavefronts",
          res.n_planes == len(truth_waves),
          f"{res.n_planes} vs {len(truth_waves)}"),
-        ("每个平面恰好覆盖 64 个电极",
+        ("every plane covers exactly 64 electrodes",
          all(int((res.plane_indices == k).sum()) == 64
              for k in range(1, res.n_planes + 1)),
-         f"各平面点数 {[int((res.plane_indices == k).sum()) for k in range(1, res.n_planes + 1)]}"),
-        ("全部尖峰被归类（无噪声）",
+         f"points per plane {[int((res.plane_indices == k).sum()) for k in range(1, res.n_planes + 1)]}"),
+        ("all spikes classified (no noise left over)",
          int(res.prediction.sum()) == counts.sum(),
          f"{int(res.prediction.sum())} / {counts.sum()}"),
-        (f"速度 v ≈ {info['speed']}",
+        (f"speed v ≈ {info['speed']}",
          bool(np.abs(vs - info["speed"]).max() < 0.01),
-         f"最大偏差 {np.abs(vs - info['speed']).max():.4f}"),
-        (f"源点 x0 ≈ {info['source_x0']}",
+         f"max deviation {np.abs(vs - info['speed']).max():.4f}"),
+        (f"source x0 ≈ {info['source_x0']}",
          bool(np.abs(x0s - info["source_x0"]).max() < 0.5),
-         f"最大偏差 {np.abs(x0s - info['source_x0']).max():.3f}"),
-        (f"源点 y0 ≈ {info['source_y0']}",
+         f"max deviation {np.abs(x0s - info['source_x0']).max():.3f}"),
+        (f"source y0 ≈ {info['source_y0']}",
          bool(np.abs(y0s - info["source_y0"]).max() < 0.5),
-         f"最大偏差 {np.abs(y0s - info['source_y0']).max():.3f}"),
-        ("激发时刻 t0 与真值差 < 2 ms",
+         f"max deviation {np.abs(y0s - info['source_y0']).max():.3f}"),
+        ("firing time t0 within 2 ms of the ground truth",
          bool(t0s.size == truth_waves.size
               and np.abs(t0s - truth_waves).max() < 2.0),
-         f"最大偏差 {np.abs(t0s - truth_waves).max():.2f} ms"
-         if t0s.size == truth_waves.size else "平面数与波前数不符"),
+         f"max deviation {np.abs(t0s - truth_waves).max():.2f} ms"
+         if t0s.size == truth_waves.size else "plane count != wavefront count"),
     ]
-    print("\n  逐项判定：")
+    print("\n  Per-item checks:")
     for name, ok, detail in checks:
-        print(f"    {'✅' if ok else '❌'} {name:28s} {detail}")
+        print(f"    {'✅' if ok else '❌'} {name:43s} {detail}")
         if not ok:
-            failures.append(f"{name}（{detail}）")
+            failures.append(f"{name} ({detail})")
 
-    print(f"\n  总耗时 {time.time() - t0:.1f} s")
+    print(f"\n  Total elapsed {time.time() - t0:.1f} s")
     if failures:
-        print("  ❌ 未通过 —— 合成记录这条路径有问题：")
+        print("  ❌ FAILED — something is wrong on the synthetic-recording path:")
         for f in failures:
             print(f"      - {f}")
     else:
-        print("  ✅ 全项通过：在【已知真值】的合成记录上，整条管线反解出了")
-        print("     自己设定的源点位置、速度与各条波前的激发时刻。")
-        print("     这比'能跑通'强得多 —— 它同时验证了阶段 1/2/3 的正确性。")
-    print("  ★ 这些数字【不是】论文表 2/3/4 的值 —— 那三个表依赖实验记录本身。")
+        print("  ✅ All checks passed: on a synthetic recording with KNOWN")
+        print("     ground truth, the whole pipeline recovered the source")
+        print("     position, the speed and the firing time of every wavefront")
+        print("     that it had set itself.")
+        print("     This is far stronger than 'it runs' — it validates the")
+        print("     correctness of stages 1/2/3 at the same time.")
+    print("  ★ These numbers are NOT the values of paper Tables 2/3/4 — those")
+    print("    three tables depend on the experimental recording itself.")
 
-    report.write("③ 合成 MEA 记录（格式与真数据相同）上的完整管线\n\n")
-    report.write("这一段是**已知真值的端到端验证**：记录由代码自己生成，")
-    report.write("源点位置、速度与各条波前的激发时刻都是设定的，")
-    report.write("所以「拟合结果是否落回真值」可以逐项判定。\n\n")
-    report.write(f"- 文件：`{rec_path.name}`（time 列单位为毫秒）\n")
-    report.write(f"- {info['n_samples']} 行 x {info['n_channels'] + 1} 列，"
+    report.write("③ Full pipeline on a synthetic MEA recording (same format as "
+                 "the real data)\n\n")
+    report.write("This section is an **end-to-end validation with known ground "
+                 "truth**: the recording is generated by the code itself, ")
+    report.write("the source position, the speed and the firing time of every "
+                 "wavefront are set there, ")
+    report.write("so whether the fits fall back onto the ground truth can be "
+                 "checked item by item.\n\n")
+    report.write(f"- file: `{rec_path.name}` (the time column is in "
+                 f"milliseconds)\n")
+    report.write(f"- {info['n_samples']} rows x {info['n_channels'] + 1} columns, "
                  f"{info['duration_ms'] / 1000:.1f} s @ "
                  f"{info['sample_rate_hz']:.0f} Hz\n")
-    report.write(f"- 真值：源点 ({info['source_x0']}, {info['source_y0']})，"
-                 f"v = {info['speed']} 格/ms，{len(truth_waves)} 条波前\n")
-    report.write(f"- 真值激发时刻 (ms)：{info['wave_times_ms']}\n")
-    report.write(f"- 检出 {counts.sum()} 个尖峰，每通道 "
-                 f"{counts.min()}–{counts.max()}\n")
-    report.write(f"- RHT 找到 {res.n_planes} 个平面，迭代 {res.n_iter_used} 次\n\n")
-    report.write("| 判定项 | 结果 | 明细 |\n|---|---|---|\n")
+    report.write(f"- ground truth: source ({info['source_x0']}, "
+                 f"{info['source_y0']}), v = {info['speed']} cells/ms, "
+                 f"{len(truth_waves)} wavefronts\n")
+    report.write(f"- ground-truth firing times (ms): {info['wave_times_ms']}\n")
+    report.write(f"- detected {counts.sum()} spikes, "
+                 f"{counts.min()}–{counts.max()} per channel\n")
+    report.write(f"- RHT found {res.n_planes} planes in {res.n_iter_used} "
+                 f"iterations\n\n")
+    report.write("| check | result | detail |\n|---|---|---|\n")
     for name, ok, detail in checks:
         report.write(f"| {name} | {'✅' if ok else '❌'} | {detail} |\n")
     report.write("\n")
@@ -408,18 +433,19 @@ def main(n_seeds: int) -> int:
     print(f"  → {OUT/'sim_synthetic_pipeline.txt'}")
 
     hr()
-    print(f" ✅ 全部完成，总耗时 {time.time() - T0:.1f} s")
-    print(f"    图: {OUT}/sim_fig2_ground_truth.png")
-    print(f"        {OUT}/sim_fig3_classification.png")
-    print(f"        {OUT}/sim_fig4_planes.png")
-    print(f"        {OUT}/sim_fig5_fpr_fnr.png")
+    print(f" ✅ All done, total elapsed {time.time() - T0:.1f} s")
+    print(f"    Figures: {OUT}/sim_fig2_ground_truth.png")
+    print(f"             {OUT}/sim_fig3_classification.png")
+    print(f"             {OUT}/sim_fig4_planes.png")
+    print(f"             {OUT}/sim_fig5_fpr_fnr.png")
     print()
-    print("    ★ 本脚本覆盖论文 §3.1.1（图 2–5）。")
-    print("      §3.1.2 的 96×96 圆波前仿真（图 6–8）是另一套参数、开销大得多，")
-    print("      见 docs/reproducibility-notes.md。")
+    print("    ★ This script covers paper §3.1.1 (Figs. 2–5).")
+    print("      The 96×96 circular-wavefront simulation of §3.1.2 (Figs. 6–8) is")
+    print("      a different study with a much larger cost; see")
+    print("      docs/reproducibility-notes.md.")
     print()
     if failures:
-        print(f" ❌ 合成记录验证有 {len(failures)} 项未通过")
+        print(f" ❌ {len(failures)} synthetic-recording checks failed")
         return 1
     return 0
 
@@ -429,7 +455,8 @@ def _cli() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seeds", type=int, default=100,
-                    help="FPR/FNR 分布用的随机种子个数（默认 100，对应论文图 5）")
+                    help="number of random seeds for the FPR/FNR distribution "
+                         "(default 100, matching paper Fig. 5)")
     a = ap.parse_args()
     return main(a.seeds)
 

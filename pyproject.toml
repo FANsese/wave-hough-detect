@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Robust wave origin detection from sensor-array data via randomized Hough transform and model fitting"
 readme = "README.md"
 requires-python = ">=3.10"
-# license = ...        ← 待定：发布前选定（见 README「许可证」一节）
+# license = ...   to be chosen before publication; see the License section of README.md
 keywords = [
     "hough-transform", "randomized-hough-transform", "wave-origin",
     "source-localization", "microelectrode-array", "multielectrode-array",

@@ -1,242 +1,203 @@
 # Code ↔ paper mapping
 
-Every line number refers to the files as committed in this repository. The equivalent locations in
-the original R scripts are given in the third column, so the port can be audited item by item.
-
-Unqualified line numbers (`:337`) are in the Python file named in the same row.
+Every line number in this document refers to a file committed in this repository and points at the
+line where the named symbol is defined: `spikes.py` 89 is the `def` line of `butter_highpass()`.
+Steps that live inside a larger function are described as such rather than cited by an internal line
+number, so the mapping stays readable and stays true.
 
 ---
 
-## Coverage: is anything missing?
+## Coverage: what is implemented, and what is not
 
-The original code is 7 R scripts. Their **reachable** functions were extracted by walking the call
-graph from each script's top-level driver (transitive closure; function-valued arguments such as the
-loss passed to `grid.optim` were added by hand, since a static scan cannot see them):
+This package implements the paper's method end to end. Every algorithm, figure and table below is
+produced by the modules in `src/wave_hough_detect/` driven by the scripts in `examples/`; nothing in
+this document depends on code outside this repository.
 
-| R script | Lines | Paper | Python | Status |
-|---|---|---|---|---|
-| `cm_hough_grid_8.R` | 779 | §3.2, Tables 2/3/4, Fig. 10 | `spikes.py`, `rht.py`, `fit.py` | ✅ bit-for-bit verified |
-| `stomach_hough17_newton_square20.r` | 1012 | §3.1.2, Figs 6–8 | `simulate_circular.py`, `fit.py` | ✅ truth-verified |
-| `stomach_plane_anglediff14.r` | 707 | §3.1.1, Figs 2–5 | `simulate.py` | ✅ |
-| `generate_stomach_data.r` | 109 | §3.1.1 data | `simulate.py` | ✅ |
-| `spike_activation_time_plot2.R` | 139 | Fig. 9 | `examples/demo_pipeline.py` fig. 1 | ✅ logic folded in |
-| `BUTTER_example_plot_3.r` | 14 | filter design | `butter_highpass()` | ✅ |
-| `make_synthetic_recording.R` | 147 | — | `simulate_recording()` | ✅ (time-unit bug fixed) |
+| Paper item | Where it is implemented | Product |
+|---|---|---|
+| §2.1, Algorithm 1 — Butterworth high-pass and spike activation times | `src/wave_hough_detect/spikes.py` | the `(x, y, t)` point cloud every later stage consumes |
+| §2.2, Algorithms 2 and 4 — randomized Hough transform over the point cloud | `src/wave_hough_detect/rht.py` | plane normals, offsets, and a signal/noise label per point |
+| §2.3, Algorithm 3 — wavefront model fitting | `src/wave_hough_detect/fit.py` | circular and linear fits, their speeds, and R² |
+| Fig. 9 style — spike detection on one channel (§2.1) | `examples/demo_pipeline.py` fig. 1 | `fig1_traces.png` |
+| Fig. 10 style — planes detected on the experimental recording | `examples/demo_pipeline.py` fig. 2 | `fig2_planes.png` |
+| Figs 11–12 style — fitted circular and linear wavefronts, and fit quality | `examples/demo_pipeline.py` figs 3–4 | `fig3_directions.png`, `fig4_fit_quality.png` |
+| Table 2 — per-plane circular fit, §3.2 recording | `examples/demo_pipeline.py` | `table2_circular.csv` |
+| Table 3 — per-plane linear fit | `examples/demo_pipeline.py` | `table3_linear.csv` |
+| Table 4 — R² per plane | `examples/demo_pipeline.py` | `table4_r2.csv` |
+| §3.1.1 — 8×8 linear-wavefront simulation, Figs 2–5 | `src/wave_hough_detect/simulate.py`, `examples/demo_simulation.py` | `sim_fig2_ground_truth.png` … `sim_fig5_fpr_fnr.png` |
+| §3.1.2 — 96×96 circular-wavefront simulation, Figs 6–8 | `src/wave_hough_detect/simulate_circular.py`, `examples/demo_simulation_circular.py` | `circ_fig6_wavefront.png`, `circ_fig7_*.png`, `circ_fig8_accuracy_vs_p.png` |
+| §3.2 input format — a synthetic stand-in for the experimental recording | `simulate_recording()` (`simulate.py` 422) | a CSV in the same layout, time column in milliseconds |
+| Noise budget of the recording (a diagnostic, not a paper item) | `tools/noise_analysis.py` | which stage removes which kind of noise |
+| Randomized vs standard dense Hough transform (a diagnostic) | `tools/compare_ht_vs_rht.py` | cost and output of both transforms on the same spike cloud |
 
-All 16 / 20 / 13 / 2 reachable functions of the four computational scripts have a Python
-counterpart. The complete reachable sets and their mappings are below.
+### Deliberately out of scope
 
-### What is *not* ported, and why
-
-| R code | Reason |
+| Paper item | Why it is out of scope here |
 |---|---|
-| `point.angle.to.line` (3 copies) | Only called by `hough2d` (an unused 2-D Hough variant) and by an interactive `select3d` debugging loop inside `stomach.plot2d.interactive`. Neither is on any path that produces a paper figure or number. |
-| `hough2d`, `hough` | Dead: never called outside commented-out blocks. |
-| `stomach.plot`, `visualize`, `compute.theta` | Dead: belong to an abandoned θ-estimation route. |
-| `stomach.sim` (1-D variant) | Dead: superseded by the 2-D simulator. |
-| `newton.cone`, `newton.cone.square`, `gra`, `hes`, `dt0`, `dx0`, … | Dead: the Newton route was abandoned in favour of `grid.optim` + `vt.optim`. Kept in R, never executed. |
-| `cone.model`, `cone.model.square`, `convert.to.grid`, `norm.xy` | Dead on every active path. (Note the *speed* vs *slowness* split: the analytic gradient `gra`/`hes` is the exact derivative of `cone.model`, the **speed** form, whereas the active driver uses `cone.model.inverted`, the **slowness** form.) |
-| `plane.model`, `vt.optim` (singular), `cone.model.inverted.xy`, `.all.xy2` | Dead: earlier variants replaced by `.all.xy` / `.all`. |
-| `draw.plane`, `get.ts`, `stomach.plot2d`, `stomach.plot2d.interactive` | **Ported as plotting**, not as 1:1 functions: `draw_planes()` and `DetectionResult.classified()` produce the same figures without `rgl`. |
-| `plot.mode ∈ {4,5,8}` (§3.1.2) | Interactive 3-D renderings needing OpenGL/`rgl`; the underlying quantity is covered by mode 3. |
-| `plot.mode ∈ {6,7}` (§3.1.2) | They **error in R** (`argument "params" is missing` — the 3-D path is called with the wrong number of arguments). |
-| The LOWESS branch of stage 1 | Commented out in R and never used; a high-pass filter is the right tool (LOWESS is a smoother, measured to retain 100.9 % of the baseline drift vs 17.2 % for the Butterworth high-pass). |
+| Interactive 3-D renderings of the wavefront (`plot.mode ∈ {4, 5, 8}`, §3.1.2) | They need an interactive OpenGL viewer. The quantity they show is already computed and plotted via `plot.mode = 3`; the interactive viewer itself, and the manual exploration it allows, are the parts not provided. |
+| Figure-only modes (`plot.mode ∈ {6, 7}`, §3.1.2) | Their only product is a figure, and the quantities they would show are covered by modes 1–3 and by the §3.1.1 evaluation. |
+| A LOWESS detrending branch as an alternative to the high-pass filter | Not implemented. A high-pass filter is the right tool for baseline drift here: LOWESS is a smoother and would flatten the sharp spikes that the next stage is meant to detect. `tools/noise_analysis.py` documents the reasoning and the frequency-band measurements behind it. |
+| A standard (non-randomized) dense Hough transform as the detector | Not part of the paper's method. The dense transform is included only as a comparison, in `tools/compare_ht_vs_rht.py`. |
+| A Newton/gradient-based optimiser for the wavefront fit | The analytic gradient and Hessian belong to the **speed** parametrisation, while the fit is written in the **slowness** form (`u = 1/v`), so they are not the derivatives of the function being minimised. The tabulated grid search plus least squares (`grid_optim()` and `vt_optim()`) is used instead. |
 | The gastric slow-wave analysis | Not part of the method in the paper. |
-
-### Reachable-function → Python symbol
-
-`cm_hough_grid_8.R` (16 reachable)
-
-| R | Python |
-|---|---|
-| `hough.plane` | `rht.hough_plane` |
-| `get.key`, `get.step.key` | `rht.get_key`, `rht._step_key` |
-| `is.point.on.plane`, `find.points.on.plane` | `rht.is_point_on_plane`, `rht.find_points_on_plane` |
-| `num.unique.detectors`, `mode` | `rht.num_unique_detectors`, `rht.r_mode` |
-| `cross.product`, `dot.product` | `rht.cross_product`, `np.dot` (inline) |
-| `hybrid.optim`, `vt.optim.all`, `compute.loss` | `fit.hybrid_optim`, `fit.vt_optim`, `fit.r_squared` |
-| `grid.optim`, `grid.optim.find.best.point`, `.1d` | `fit.grid_optim`, `fit._find_best_point_1d` |
-| `cone.model.inverted.all.xy`, `.all` | `fit.circular_loss_xy`, `fit.circular_loss` |
-| `normv` | `np.linalg.norm` (inline) |
-
-`stomach_plane_anglediff14.r` (20 reachable) adds
-
-| R | Python |
-|---|---|
-| `stomach.sim.one`, `stomach.sim.one2d`, `stomach.sim2d` | `simulate._simulate_one_line`, `._simulate_one_line_2d`, `simulate.simulate_linear_wavefronts` |
-| `visualize2d`, `optimality.table` | `simulate.evaluate_detection`, `simulate.detection_sweep` |
-| `last.element`, `first` | `[-1]`, `[0]` (inline) |
-| `stomach.plot2d` | `simulate.DetectionResult.classified` + `examples/demo_simulation.py` fig. 3 |
-| `stomach.plot2d.interactive`, `draw.plane`, `get.ts` | `draw_planes()` in `examples/demo_simulation.py` |
-
-`stomach_hough17_newton_square20.r` (13 reachable) adds
-
-| R | Python |
-|---|---|
-| `stomach.sim.one`, `stomach.sim.one2d`, `stomach.sim2d` | `simulate_circular.simulate_circular_wavefronts` (per-cell form, different from the §3.1.1 simulator) |
-| `visualize2d`, `optimality.table` | `simulate_circular.evaluate_circular`, `.accuracy_sweep` |
-| `relerror.plot` | `plot_accuracy()` in `examples/demo_simulation_circular.py` |
-| `last` | `[-1]` (inline) |
-
-`generate_stomach_data.r` (2 reachable): `stomach.sim2d`, `last.element` → as above.
 
 ## Stage 1 — Butterworth filtering and spike activation times (§2.1, Algorithm 1)
 
-`src/wave_hough_detect/spikes.py` · R: `R_Codes/cm_hough_grid_8.R:40-115`, `spike_activation_time.R:51-136`
+`src/wave_hough_detect/spikes.py`
 
-| Paper step | Implementation | R counterpart |
-|---|---|---|
-| Butterworth high-pass design | `butter_highpass()` :87 — `butter(2, 1/500, btype="high")` | `butter(2, 1/500, type="high")` |
-| Filter order | `BUTTER_ORDER = 2` :24 | `signal::butter(2, ...)` — `n` *is* the order |
-| Cutoff | `BUTTER_CUTOFF = 1/500` :25 (fraction of Nyquist → 10 Hz at 10 kHz) | same |
-| Single-pass IIR filtering | `filter_channel()` :98 — `scipy.signal.lfilter` | `filter()` |
-| Discarded LOWESS alternative | documented only; not implemented (it is commented out in R and was never used) | `cm_hough_grid_8.R:40-43` |
-| Threshold at the 99.95th percentile | `detect_spikes()` :111 — `np.quantile(filtered, 0.0005)` | `quantile(smooth$y, 0.0005)`; equivalently the upper-tail `0.9995` on the negated signal (`spike_activation_time.R:51`) |
-| Locate the first candidate peak | `np.argmin` on the running working copy :111 | `which.min` (negative-going spikes) |
-| Loop while the peak is below threshold | `while True: … if peak >= threshold: break` | `while (1) { … }` |
-| Neighbourhood exclusion `G` | `EXCLUSION_HALF = 500` samples :27, applied inside `detect_spikes()` | `min.index.gap = 500` |
-| Cap on spikes per channel | `MAX_SPIKES_PER_CHANNEL = 200` :28 | `for (k in 1:200)` |
-| Per-channel driver | `detect_all_channels()` :150 | `for (i in 2:ncol(data))` |
-| Output point set `{(xᵢ,yᵢ,tᵢ)}` | `spikes_to_table()` :168 | `all.lines$x.observ / y.observ / ts.observ` |
-| Grid coordinate mapping | `channel_to_xy()` :32, `GRID_SIDE = 8` :23 | `substr(name,3,4)`-based mapping, row-major |
-| **Time scaling `ts / 200`** | `TIME_SCALE = 200` :29, applied in `spikes_to_table()` :184 | `cm_hough_grid_8.R:115` |
+| Paper step | Implementation |
+|---|---|
+| Butterworth high-pass design | `butter_highpass()` (`spikes.py` 89) — `scipy.signal.butter(2, 1/500, btype="high")` |
+| Filter order | `BUTTER_ORDER = 2` (`spikes.py` 24) — the second argument of `butter()` is the order |
+| Cutoff | `BUTTER_CUTOFF = 1/500` (`spikes.py` 25) — a fraction of Nyquist, i.e. 10 Hz at a 10 kHz sampling rate |
+| Single-pass IIR filtering | `filter_channel()` (`spikes.py` 101) — `scipy.signal.lfilter`, one forward pass, no phase compensation |
+| Threshold at the 99.95th percentile | `SPIKE_QUANTILE = 0.0005` (`spikes.py` 26), applied inside `detect_spikes()` as `np.quantile(filtered, 0.0005)` |
+| Locate the first candidate peak | `detect_spikes()` (`spikes.py` 116) — the global minimum of the running working copy, via `np.argmin`; spikes in this recording are negative-going |
+| Loop while the peak is below threshold | `detect_spikes()` — the loop stops as soon as the minimum is at or above the threshold |
+| Neighbourhood exclusion `G` | `EXCLUSION_HALF = 500` samples (`spikes.py` 27), applied inside `detect_spikes()`: samples within ±500 of an accepted spike are blanked, so the same spike is not found twice |
+| Cap on spikes per channel | `MAX_SPIKES_PER_CHANNEL = 200` (`spikes.py` 28) |
+| Per-channel driver | `detect_all_channels()` (`spikes.py` 159) — column 1 is time, columns 2…65 are electrodes |
+| Output point set `{(xᵢ,yᵢ,tᵢ)}` | `spikes_to_table()` (`spikes.py` 177) — also carries the channel index, and sorts stably |
+| Grid coordinate mapping | `channel_to_xy()` (`spikes.py` 32), `GRID_SIDE = 8` (`spikes.py` 23) — row-major |
+| **Time scaling `t / 200`** | `TIME_SCALE = 200` (`spikes.py` 29), applied inside `spikes_to_table()`. This is a conditioning scale, not a unit conversion — see `docs/reproducibility-notes.md` |
+| Discarded LOWESS alternative | Documented only, not implemented (see the out-of-scope table above) |
 
 ---
 
 ## Stage 2 — Randomized Hough transform (§2.2, Algorithms 2 & 4)
 
-`src/wave_hough_detect/rht.py` · R: `R_Codes/cm_hough_grid_8.R:197-453`
+`src/wave_hough_detect/rht.py`
 
-| Paper step | Implementation | R counterpart |
-|---|---|---|
-| Plane through three sampled points | `cross_product()` :50, used at :293 | `cross.product(v2-v1, v3-v1)` :275-277 |
-| Sign canonicalisation of the normal | :304 (`n̂ ← n̂·sign(n₁)`) | :279-281 |
-| Degenerate-normal rejection | :307-313 (2 component pairs by default; all 3 when `strict_degenerate_check=True`) | :284-285 (2 pairs; the R *simulation* copy tests 3) |
-| Spherical coordinates | :314-320 — `ρ = \|n̂·p₁\|`, `φ = acos(n₃)`, `θ = asin(n₂/sin φ)` | :289-292 |
-| Accumulator discretisation `(ρ, φ, θ)` | `get_key()` :77; `RHO_STEP = 0.05`, `PHI_STEP = THETA_STEP = 2°` :26-28 | `get.key()` :201-207 |
-| Truncation toward zero | `_step_key()` :59 — `np.trunc`, **not** `floor` | `as.integer()` |
-| Vote | :338 — `accumulator[key].extend(sample_idx)` | :297-300 |
-| **Vote threshold** | :341 — `len(...) > vote_threshold * 3`, i.e. **≥ 9 votes** with `vote_threshold = 8` | :301 |
-| Least-squares plane refinement | :349-357 — `lstsq([y, t, 1], x)` → `n̂ = (1, −a, −b)`, `ρ = c` | `lm.fit(cbind(pts[,2:3],1), pts[,1])` :305-311 |
-| Inlier test "is the point on the plane" | `is_point_on_plane()` :118, `INLIER_TOL = 0.1` :29 | `is.point.on.plane()` :209-213 |
-| Collect inliers from the unclassified set | `find_points_on_plane()` :130 | `find.points.on.plane()` :215-225 |
-| Accept only if > ⅔ of detectors are on it | `num_unique_detectors()` :146; `min_detectors = 40` (of 64) | :227-236, :319-322 |
-| Mark the cluster and remove it | :368-379 | :328-348 |
-| Clear the accumulator after acceptance | :391 | :348 |
-| Empty-accumulator guard | :395-398 — returns an empty result | **absent in R**: `1:length(...)` degenerates to `1:0` and `if()` errors |
-| Master normal = plane with most points | `r_mode()` :157, used at :413 | `mode(positive.plane.indices)` :353-358 |
-| Angle between each normal and the master | :416-420 | :364-379 |
-| 5° tolerance, `min(Δ, 180−Δ)` | `ANGLE_TOL_DEG = 5.0` :30, applied at :422 | :363, :373 |
-| Discarded planes become unclassified | :425-426 | :381-383 |
-| Re-assign unclassified points close to a kept plane | :429-446 | :386-404 |
-| **Regrow a plane along the master normal** | :448-480, `regrow_master_plane=True`, `SMALL_PLANE_THRESHOLD = 30` :31 | :406-450 |
-| Unclassified points are noise | `prediction == 0` throughout | :449-450 |
+| Paper step | Implementation |
+|---|---|
+| Plane through three sampled points | `cross_product()` (`rht.py` 51), applied inside `hough_plane()` to three distinct indices drawn without replacement |
+| Sign canonicalisation of the normal | Inside `hough_plane()` — `n̂ ← n̂·sign(n₁)`. The rule is ill-conditioned when `n₁ ≈ 0`, which is why one plane can be split across the φ ≈ 0° and φ ≈ 180° buckets |
+| Degenerate-normal rejection | Inside `hough_plane()` — two component pairs by default; all three when `strict_degenerate_check=True` |
+| Spherical coordinates | Inside `hough_plane()` — `ρ = \|n̂·p₁\|`, `φ = acos(n₃)`, `θ = asin(n₂/sin φ)` |
+| Accumulator discretisation `(ρ, φ, θ)` | `get_key()` (`rht.py` 82); `RHO_STEP = 0.05`, `PHI_STEP = THETA_STEP = 2°` (`rht.py` 25-27) |
+| Truncation toward zero | `_step_key()` (`rht.py` 60) — `np.trunc`, **not** `floor`, so a negative ρ lands in the bucket it belongs to |
+| Vote | Inside `hough_plane()` — three indices are appended to the bucket of the plane's key |
+| **Vote threshold** | Inside `hough_plane()` — a plane is accepted when `len(bucket) > vote_threshold * 3`, and since each vote appends three indices that is **≥ 9 votes** with the default `vote_threshold = 8`. The effective threshold is 9, not the paper's 8 |
+| Least-squares plane refinement | Inside `hough_plane()` — `lstsq([y, t, 1], x)` over every point in the bucket, giving `n̂ = (1, −a, −b)`, `ρ = c` |
+| Inlier test "is the point on the plane" | `is_point_on_plane()` (`rht.py` 128), `INLIER_TOL = 0.1` (`rht.py` 28), applied inside `hough_plane()` |
+| Collect inliers from the unclassified set | `find_points_on_plane()` (`rht.py` 140) — only points not yet assigned to a plane are considered |
+| Accept only if > ⅔ of detectors are on it | `num_unique_detectors()` (`rht.py` 157), tested inside `hough_plane()` against `min_detectors = 40` of 64 |
+| Mark the cluster and remove it | Inside `hough_plane()` — accepted points receive the plane index and label 1, so they leave the unclassified set |
+| Log the accepted plane | Inside `hough_plane()` — iteration, votes, detector count, normal and ρ are appended to `HoughResult.accept_log` |
+| Clear the accumulator after acceptance | Inside `hough_plane()` — the accumulator starts empty for the next plane |
+| Empty-accumulator guard | `hough_plane()` returns an empty `HoughResult` (`rht.py` 229) when no plane is accepted, instead of raising; callers check `HoughResult.n_planes` |
+| Master normal = plane with most points | `r_mode()` (`rht.py` 168) over the accepted plane indices, inside `hough_plane()` |
+| Angle between each normal and the master | Inside `hough_plane()` — the angle between each accepted normal and the master normal |
+| 5° tolerance, `min(Δ, 180−Δ)` | `ANGLE_TOL_DEG = 5.0` (`rht.py` 29); the smaller of the angle and its supplement is compared with it |
+| Discarded planes become unclassified | Inside `hough_plane()` — their points are relabelled 0 |
+| Re-assign unclassified points close to a kept plane | Inside `hough_plane()` — each kept plane re-claims the remaining points within the inlier tolerance |
+| **Regrow a plane along the master normal** | Inside `hough_plane()`, `regrow_master_plane=True`, `SMALL_PLANE_THRESHOLD = 30` (`rht.py` 30) — the block that follows Algorithm 4 and is not described in the paper. See the limitations in `docs/reproducibility-notes.md` |
+| Unclassified points are noise | `prediction == 0` throughout |
 
-Two details that only matter away from the experimental data: the tail-regrow block (:448-480)
-never executes on it (all 320 points are classified, so the unclassified set is empty), which is
-why omitting it produces results that *look* completely correct; and the simulation copy of the R
-function uses a ρ step of 0.5 and an inlier tolerance of 1.0 instead of 0.05 and 0.1, matching the
-fact that its time axis is not divided by 200.
+Two details that only matter away from the experimental recording: the tail-regrow block never
+executes on it (all 320 points are classified, so the unclassified set is empty), which is why
+disabling it still produces results that *look* completely correct; and the simulation preset
+`SIM_PRESET` (`rht.py` 40) uses a ρ step of 0.5 and an inlier tolerance of 1.0
+instead of 0.05 and 0.1, because the simulation study's time axis is not divided by 200 and its `t`
+values are correspondingly larger. `evaluate_detection()` applies `SIM_PRESET` automatically.
 
 ---
 
 ## Stage 3 — Wavefront model fitting (§2.3, Algorithm 3)
 
-`src/wave_hough_detect/fit.py` · R: `R_Codes/cm_hough_grid_8.R:521-779`
+`src/wave_hough_detect/fit.py`
 
-| Paper step | Implementation | R counterpart |
-|---|---|---|
-| Assemble `result.array` per plane and electrode | `build_result_array()` :54 | :521-533 |
-| **Scale time back to ms (`×200`)** | `TIME_SCALE_BACK = 200.0` :34, applied at :72 | :528 |
-| Extract a plane's point set | `plane_points()` :76 (column-major flatten, keep `t > 0`) | :727-731 |
-| Eq. (1) circular arrival time | `circular_loss()` :97 — `√((x−x₀)²+(y−y₀)²)·u − (t−t₀)` | `cone.model.inverted.all()` :550-556 |
-| **`u = 1/v` slot convention** | `circular_loss()` :97 uses multiplication by `u`, not division by `v` | `p[[3]]` holds the slowness |
-| 4×4 lattice tabulation | `_find_best_point_1d()` :151, `grid_optim()` :177; `GRID_SPLITS = 4` :29 | `grid.optim.find.best.point.1d()` :578-605 |
-| Shrink to `[a_{î−1}, a_{î+1}]`, clamp at the bounds | :151-175 | :625-636 |
-| `(x₀, y₀)` step, `(v, t₀)` fixed | :286 | :675-676 |
-| `(v, t₀)` step by least squares | `vt_optim()` :222-247 — regression of `t` on `r` | `vt.optim.all()` :656-666 |
-| Outer loop until convergence | `hybrid_optim()` :249; `HYBRID_EPS = 1e-6` :32, `HYBRID_MAX_ITER = 10000` :33 | :674-688 |
-| Search window | `SEARCH_LOWER/UPPER = ±50` :27-28 | :669 |
-| Convert back to speed | `fit_circular()` :377 — `v = 1/p[2]` | `'v' = 1/pp.estimate[[3]]` :733 |
-| Eq. (2) linear arrival time | `linear_loss()` :120 — `ãx + b̃y + c̃` | `plane.model()` :744-749 |
-| Eqs. (5)–(7) least squares | `fit_linear()` :383-393 — `lstsq([x, y, 1], t)` | `lm(ts.observ ~ x.observ + y.observ)` :769 |
-| Speed from the linear model | :395 — `v = 1/√(ã²+b̃²)` | :771 |
-| Eq. (3)/(4) as an objective | `r_squared()` :132 — `1 − SS_res/SS_tot` | `compute.loss()` :715-721 |
+| Paper step | Implementation |
+|---|---|
+| Assemble `result.array` per plane and electrode | `build_result_array()` (`fit.py` 53) |
+| **Scale time back to ms (`×200`)** | `TIME_SCALE_BACK = 200.0` (`fit.py` 34), applied inside `build_result_array()` |
+| Extract a plane's point set | `plane_points()` (`fit.py` 78) — column-major flatten, keeps `t > 0` |
+| Eq. (1) circular arrival time | `circular_loss()` (`fit.py` 99) — `√((x−x₀)²+(y−y₀)²)·u − (t−t₀)` |
+| **`u = 1/v` slot convention** | `circular_loss()` multiplies by `u`, the slowness; the speed is recovered only at the end |
+| 4×4 lattice tabulation | `_find_best_point_1d()` (`fit.py` 156), `grid_optim()` (`fit.py` 183); `GRID_SPLITS = 4`, `GRID_EPS = 1e-8`, `GRID_MAX_ITER = 1000` (`fit.py` 29-31) |
+| Shrink to `[a_{î−1}, a_{î+1}]`, clamp at the bounds | `grid_optim()` — each pass narrows the search interval around the best lattice point of the previous pass |
+| `(x₀, y₀)` step, `(v, t₀)` fixed | Inside `hybrid_optim()` — a `grid_optim()` pass on `(x₀, y₀)` with the slowness and `t₀` held fixed |
+| `(v, t₀)` step by least squares | `vt_optim()` (`fit.py` 231) — regression of `t` on the radius `r` |
+| Outer loop until convergence | `hybrid_optim()` (`fit.py` 258); `HYBRID_EPS = 1e-6`, `HYBRID_MAX_ITER = 10000` (`fit.py` 32-33) |
+| Search window | `SEARCH_LOWER`/`SEARCH_UPPER` = ±50 (`fit.py` 27-28) |
+| Convert back to speed | `fit_circular()` (`fit.py` 364) — the fitted slowness is inverted, `v = 1/u` |
+| Eq. (2) linear arrival time | `linear_loss()` (`fit.py` 124) — `ãx + b̃y + c̃` |
+| Eqs. (5)–(7) least squares | `fit_linear()` (`fit.py` 405) — `lstsq([x, y, 1], t)` |
+| Speed from the linear model | `fit_linear()` — `v = 1/√(ã²+b̃²)` |
+| Eq. (3)/(4) as an objective | `r_squared()` (`fit.py` 136) — `1 − SS_res/SS_tot` |
 
-**Data-driven initial guess** — `centroid_initial_guess()` :329 and `fit_circular(..., n_starts=2)`
-:346 have no R counterpart. R's alternating minimisation always starts from `(u, t₀) = (1, 1)`,
-which fails when the source lies inside the grid; `n_starts=1`, the default, is exactly the R
-behaviour and is what reproduces Tables 2 and 4.
+**Initial guess** — the alternating minimisation always starts from `(u, t₀) = (1, 1)`, independent
+of the data, which is a poor start when the source lies inside the grid.
+`centroid_initial_guess()` (`fit.py` 343) is available through
+`n_starts`: `fit_circular(..., n_starts=2)` tries both starts and keeps the lower final loss. The
+default `n_starts=1` is the setting that reproduces Tables 2 and 4; the sensitivity to the starting
+point is a property of this fit and is listed in the limitations of `docs/reproducibility-notes.md`.
 
 ---
 
 ## Stage 4 — Simulation and evaluation (§3.1, Figures 2–8)
 
-`src/wave_hough_detect/simulate.py` · R: `figure 5` copy `fig5_detection_performance.R`,
-`generate_stomach_data.r`, `make_synthetic_recording.R`
+`src/wave_hough_detect/simulate.py`
 
-| Paper item | Implementation | R counterpart |
-|---|---|---|
-| Fig. 2–4 — 8×8 linear-wavefront ground truth | `simulate_linear_wavefronts()` :138 | `stomach.sim2d()` `fig5:115` / `generate_stomach_data.r:8` |
-| One straight line of the wavefront | `_simulate_one_line()` :83 | `stomach.sim.one()` `fig5:23` |
-| One planar wavefront | `_simulate_one_line_2d()` :111 | `stomach.sim.one2d()` `fig5:92` |
-| Seed derived from the parameters | `seed_from_params()` :65 — `SEED_BASE × Π(parameters) + shift` | `set.seed(...)` `fig5:128-129` |
-| Fig. 5 — FPR / FNR | `detection_rates()` :271, `evaluate_detection()` :327, `detection_sweep()` :374 | `visualize2d()` `fig5:344-375`, `optimality.table()` `fig5:680-705` |
-| Four-class labels (TP/FP/FN/TN) | `DetectionResult.classified()` :293 | `stomach.plot2d()` `fig5:320-342` |
-| Plane surfaces for Fig. 4 | `draw_planes()` in `examples/demo_simulation.py` | `draw.plane()` `fig5:268-277` |
-| Synthetic recording in the §3.2 input format | `simulate_recording()` :397 | `make_synthetic_recording.R` — **its `TIME_UNITS_PER_MS <- 200` is wrong**, see `docs/reproducibility-notes.md` |
-| §3.1.2 — 96×96 circular simulation, Figs 6–8 | `simulate_circular.py` — see the next section | `stomach_hough17_newton_square20.r` |
+| Paper item | Implementation |
+|---|---|
+| Fig. 2–4 — 8×8 linear-wavefront ground truth | `simulate_linear_wavefronts()` (`simulate.py` 144) |
+| One straight line of the wavefront | `_simulate_one_line()` (`simulate.py` 86) |
+| One planar wavefront | `_simulate_one_line_2d()` (`simulate.py` 116) |
+| Seed derived from the parameters | `seed_from_params()` (`simulate.py` 68) — `SEED_BASE × Π(parameters) + shift`, with `SEED_BASE_2D = 101` (`simulate.py` 49) |
+| Fig. 5 — FPR / FNR | `detection_rates()` (`simulate.py` 287), `evaluate_detection()` (`simulate.py` 349), `detection_sweep()` (`simulate.py` 397) |
+| Four-class labels (TP/FP/FN/TN) | `DetectionResult.classified()` (`simulate.py` 326) |
+| Plane surfaces for Fig. 4 | `draw_planes()` in `examples/demo_simulation.py` |
+| Synthetic recording in the §3.2 input format | `simulate_recording()` (`simulate.py` 422) — the time column is written in milliseconds (`time_units_per_ms = 1.0`), pinned by `tests/test_simulate.py` |
+| §3.1.2 — 96×96 circular simulation, Figs 6–8 | `simulate_circular.py` — see the next section |
 
 ---
 
 ## Stage 4b — 96×96 circular-wavefront simulation and accuracy (§3.1.2, Figures 6–8)
 
-`src/wave_hough_detect/simulate_circular.py` ·
-R: `R_Codes/stomach_hough17_newton_square20.r`
+`src/wave_hough_detect/simulate_circular.py`
 
-| Paper item | Implementation | R counterpart |
-|---|---|---|
-| One 96×96 dataset | `simulate_circular_wavefronts()` :113 | `stomach.sim2d()` :156-198 |
-| Per-electrode arrival time | inner double loop :161-170 | `stomach.sim.one2d()` :100-153 |
-| Seed from the parameters | `seed_circular()` :94 | `set.seed(100·Πparams)` :160-161 |
-| Fit one dataset | `estimate_circular_wavefront()` :283 | `hybrid.optim(sim.matrix)` :671 |
-| Search window / tolerance | `SEARCH_LOWER_CIRCULAR`/`UPPER` :75-76, `CIRCULAR_EPS = 1e-8` :77 | ``c(-500,-500)``/``c(500,500)``, `epsilon = 1e-8` :632-635 |
-| What is scored (signal + noise) | `WavefrontEstimate.loss` / `.r2` :217-232 | `cone.model.inverted.all` over the whole `sim.matrix` :663, 671 |
-| Ground truth | `CIRCULAR_TRUTH` :57 | `list('truth'=c(x,y,miux,ts))` :728 |
-| SNR on the x-axis | `WavefrontEstimate.snr` :233 | `pp[i,6]/pp[i,7]` :788 |
-| Sweep modes 1/2/3 | `PLOT_MODES` :80-90, `accuracy_sweep()` :339 | `optimality.table()` :878-1010 |
-| Fig. 6 — 3-D wavefront | `examples/demo_simulation_circular.py`, part ① | `plot3d`/`points3d` :676-689 (needs `rgl`) |
-| Figs 7/8 — accuracy curves | `plot_accuracy()` in the same example | `relerror.plot()` :782-876 |
+| Paper item | Implementation |
+|---|---|
+| One 96×96 dataset | `simulate_circular_wavefronts()` (`simulate_circular.py` 127) |
+| Per-electrode arrival time | Inside `simulate_circular_wavefronts()` — a row-major double loop over the 96×96 electrodes |
+| Seed from the parameters | `seed_circular()` (`simulate_circular.py` 107) — `SEED_BASE_CIRCULAR × Π(parameters) + seed_shift`, `SEED_BASE_CIRCULAR = 100` (`simulate_circular.py` 66) |
+| Fit one dataset | `estimate_circular_wavefront()` (`simulate_circular.py` 311) |
+| Search window / tolerance | `SEARCH_LOWER_CIRCULAR` / `SEARCH_UPPER_CIRCULAR` = ∓500 (`simulate_circular.py` 87-88), `CIRCULAR_EPS = 1e-8` (`simulate_circular.py` 89) |
+| What is scored (signal + noise) | `WavefrontEstimate.loss` / `.r2` (`simulate_circular.py` 219) — both are computed over every point of the dataset |
+| Ground truth | `CIRCULAR_TRUTH` (`simulate_circular.py` 69) — `x₀ = y₀ = 48`, `v = 1`, `t₀ = 2` |
+| SNR on the x-axis | `WavefrontEstimate.snr` (`simulate_circular.py` 256) — the ratio of signal points to noise points, not an amplitude ratio |
+| Sweep modes 1/2/3 | `PLOT_MODES` (`simulate_circular.py` 92), `accuracy_sweep()` (`simulate_circular.py` 370) |
+| Fig. 6 style — 3-D wavefront | `examples/demo_simulation_circular.py`, part ① |
+| Figs 7/8 style — accuracy curves | `plot_accuracy()` in the same example |
 
 Three things about this section that are easy to get wrong, all measured rather than assumed:
 
-* **R's fixed initial guess is right here by construction.** The fit starts from `(u, t₀) = (1, 1)`
+* **The default initial guess is right here by construction.** The fit starts from `(u, t₀) = (1, 1)`
   and the truth is `v = 1`, `t₀ = 2`. That is why the circular fit converges here (4 iterations)
-  while the same routine fails on inside-the-grid sources in §3.1.1.
-* **`r2` here is not comparable to Table 4.** R hands the fit the whole matrix *including the
-  `z = 0` noise rows*, so with an exactly correct model the paper's own R² is 0.953, not 1. Using
-  the signal points alone gives 1.0000000000. Both are reported.
+  while the same routine fails on inside-the-grid sources in §3.1.1, where
+  `fit_circular(..., n_starts=2)` is the remedy.
+* **`r2` here is not comparable to Table 4.** The fit is handed the whole dataset *including the
+  `z = 0` noise rows*, so with an exactly correct model R² is 0.953, not 1. Scoring the signal
+  points alone gives 1.0000000000.
 * **The σ sweep is dominated by the noise spikes.** Mode 3 sweeps σ while holding λ_n = 1, and the
   ≈100 outlier spikes contribute far more to the loss than the measurement error does. Measured:
   relative error changes by less than 2× across σ ∈ [0, 1] with the noise present, and by more than
   10× with it switched off.
 
-**Not ported from this file:** `plot.mode ∈ {4, 5, 8}` (interactive 3-D renderings needing
-OpenGL/`rgl`; the underlying quantity is already covered by mode 3), `plot.mode ∈ {6, 7}` (they
-raise `argument "params" is missing` in R — the 3-D figure path is passed the wrong number of
-arguments), and the `newton.cone` / `gra` / `hes` machinery, which is dead code on every active path
-(verified: the analytic gradient/Hessian are the exact derivatives of `cone.model`, i.e. of the
-*speed* parametrisation, while the active driver uses `cone.model.inverted`, the *slowness* one).
+**Out of scope here:** `plot.mode ∈ {4, 5, 8}` (interactive 3-D renderings needing an OpenGL viewer;
+the underlying quantity is already covered by mode 3), `plot.mode ∈ {6, 7}` (figure-only modes), and
+the Newton-route gradient/Hessian machinery — the analytic gradient and Hessian are the exact
+derivatives of the *speed* parametrisation, while the fit here uses the *slowness* form, so the
+tabulated grid search plus least squares is used instead.
 
 ---
 
 ## Simulation parameters
 
-
-
 ### §3.1.1 — 8×8 linear-wavefront simulation
 
-`PAPER_2D_PARAMS` (`simulate.py:50`); R: `generate_stomach_data.r:95-107`, `fig5:345-349`.
+`PAPER_2D_PARAMS` (`simulate.py` 53).
 
 | Argument | Value | Paper symbol |
 |---|---|---|
@@ -253,27 +214,26 @@ arguments), and the `newton.cone` / `gra` / `hes` machinery, which is dead code 
 
 ### §3.2 — experimental recording
 
-R: `R_Codes/cm_hough_grid_8.R`.
-
-| Quantity | Value | Line |
+| Quantity | Value | Where |
 |---|---|---|
-| Butterworth high-pass | `butter(2, 1/500, type="high")` | :55 |
-| Spike threshold | `quantile(smooth$y, 0.0005)` | :59 |
-| Neighbourhood exclusion window | ±500 samples | :60 |
-| RHT vote threshold | `8` (tested as `> threshold × 3` → 9 votes) | :265, :301 |
-| Accumulator quantisation | `ρ = 0.05`, `φ = θ = 2°` | :202-204 |
-| Inlier tolerance | `0.1` | :212 |
-| Minimum electrodes per plane | `40` of 64 (≈ ⅔) | :322 |
-| Angular tolerance (Algorithm 4) | `5°` | :363 |
-| Regrow threshold | `small.plane.threshold = 30` points | :407 |
-| Search window | `[-50, 50]²` | :669 |
-| Convergence tolerance | `1e-6` | :672 |
+| Butterworth high-pass | `butter(2, 1/500, btype="high")` | `BUTTER_ORDER`, `BUTTER_CUTOFF` (`spikes.py` 24-25), applied by `butter_highpass()` |
+| Spike threshold | 0.05th percentile of the filtered signal | `SPIKE_QUANTILE` (`spikes.py` 26), applied inside `detect_spikes()` |
+| Neighbourhood exclusion window | ±500 samples | `EXCLUSION_HALF` (`spikes.py` 27) |
+| RHT vote threshold | `8`, tested as `> 8 × 3` → 9 votes | `hough_plane()` (`rht.py` 229) |
+| Accumulator quantisation | `ρ = 0.05`, `φ = θ = 2°` | `RHO_STEP`, `PHI_STEP`, `THETA_STEP` (`rht.py` 25-27) |
+| Inlier tolerance | `0.1` | `INLIER_TOL` (`rht.py` 28) |
+| Minimum electrodes per plane | `40` of 64 (≈ ⅔) | `min_detectors` of `hough_plane()`, checked with `num_unique_detectors()` |
+| Angular tolerance (Algorithm 4) | `5°` | `ANGLE_TOL_DEG` (`rht.py` 29) |
+| Regrow threshold | 30 points | `SMALL_PLANE_THRESHOLD` (`rht.py` 30) |
+| Search window | `[−50, 50]²` | `SEARCH_LOWER`, `SEARCH_UPPER` (`fit.py` 27-28) |
+| Convergence tolerance | `1e-6` | `HYBRID_EPS` (`fit.py` 32) |
+| Iteration cap | `max_iter = 200000` on this recording | `hough_plane()` (`rht.py` 229); the default is 30 000, see the limitations in `docs/reproducibility-notes.md` |
 
 ---
 
 ### §3.1.2 — 96×96 circular-wavefront simulation
 
-`PAPER_CIRCULAR_PARAMS` (`simulate_circular.py:60`); R: `stomach_hough17_newton_square20.r:653-662`.
+`PAPER_CIRCULAR_PARAMS` (`simulate_circular.py` 72).
 
 | Argument | Value | Meaning |
 |---|---|---|
@@ -286,10 +246,12 @@ R: `R_Codes/cm_hough_grid_8.R`.
 | `noise_freq` | 1 | noise rate λ_n (swept in mode 1) |
 | `sigma` | 1e-6 | measurement error (swept in mode 3) |
 | `gap` | 1e6 | exponential mean of the inter-wavefront interval — large enough that only one wavefront is generated |
-| `u_x`, `u_y`, `ratio` | 1, 1, 10 | present in R's signature but **unused** by this simulator |
+| `u_x`, `u_y`, `ratio` | 1, 1, 10 | accepted by the simulator's signature but **unused** by its body |
 
-Sweep grids: mode 1 → λ_n = 2^((−6:16)/2) ∈ [0.125, 256] with `p = 0`, `σ = 1e-6`;
-mode 2 → `p = (0:8)/10` with λ_n = 1, `σ = 1e-6`; mode 3 → `σ = (1:10)/10` with λ_n = 1, `p = 0`.
-R's committed replicate counts are 23, 9 and 10 respectively.
+Sweep grids: mode 1 → λ_n = 2^(k/2) for k = −6 … 16, i.e. λ_n ∈ [0.125, 256], with `p = 0` and
+`σ = 1e-6`; mode 2 → `p = 0.0, 0.1, …, 0.8` with λ_n = 1 and `σ = 1e-6`; mode 3 →
+`σ = 0.1, 0.2, …, 1.0` with λ_n = 1 and `p = 0`. The default replicate counts of `accuracy_sweep()`
+are 23, 9 and 10 respectively, and are the counts behind the runtimes quoted in
+`docs/reproducibility-notes.md`.
 
 ---

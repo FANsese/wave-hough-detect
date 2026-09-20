@@ -19,8 +19,9 @@ The RHT is randomised by design: the number of iterations needed is a **random v
 seeds on the experimental data it has mean ≈ 13 800 and range 8 795–21 425 — a factor of 2.4. This
 is a property of the method, not of the implementation. All 30 seeds found all 5 planes.
 
-Within one Python process, passing the same `seed` reproduces the same result. Across R and Python
-it does **not**, because the random number generators are different — see section 3.
+Within one Python process, passing the same `seed` reproduces the same result exactly, and passing
+an explicit `trace` — a pre-drawn sequence of sampled index triples — bypasses the random number
+generator altogether. The stages marked deterministic above take no seed because they draw nothing.
 
 ---
 
@@ -48,24 +49,7 @@ pytest -q
 
 ---
 
-## 3. R ↔ Python: statistically equivalent, never bit-wise
-
-R's `sample()` uses Mersenne-Twister with rejection sampling; numpy uses PCG64. There is no way to
-make numpy emit R's stream. Two consequences:
-
-* **The port's logic is verified bit for bit** by having R export the exact sequence of sampled
-  index triples and replaying it in Python (`dev/verify_against_r/`). Every step *except* the
-  random draw is compared exactly — see `docs/porting-and-validation.md` for the results.
-* **The simulation study is statistically equivalent only.** `simulate_linear_wavefronts()`
-  reproduces R's *sampling structure* (which draw happens when, from which distribution) and R's
-  *seed arithmetic*, so a given parameter set is reproducible within Python, but the datasets
-  themselves differ from R's. The FPR/FNR distributions agree in character, not in digits.
-
-This is a hard boundary. Do not describe the simulation layer as "matching R".
-
----
-
-## 4. The two time scales, and the trap they create
+## 3. The two time scales, and the trap they create
 
 The pipeline uses two different scalings of the time axis, and mixing them up produces wrong
 answers **without any error message**:
@@ -85,22 +69,21 @@ recording, `x, y ∈ [1, 8]` and `t ∈ [4.8, 38.9]` after division — comparab
 division, `σ` within a plane is ≈ 5.35 against a tolerance of 0.1 and **not a single plane is
 found**.
 
-Why the input's time column must be in milliseconds: because the *fitted* times are the original
-column values, and `v` comes out in grid-units per column-unit. The paper reports `v ≈ 0.44`, which
+Why the input's time column must be in milliseconds: because the *fitted* times stay in the unit of
+that column, and `v` comes out in grid-units per column-unit. The paper reports `v ≈ 0.44`, which
 is grid-units per millisecond. Writing the time column in units of 1/200 ms moves the Hough-scale
 `t` to ≈ 900–8700 while `x, y` stay in `[1, 8]` — three orders of magnitude apart. Measured result:
 14 planes instead of 9, every normal pointing along `x` or along a grid diagonal, `v ≈ 0`,
 `t₀ ≈ ±2×10⁷`.
 
-The released R script `make_synthetic_recording.R` sets `TIME_UNITS_PER_MS <- 200` and its comment
-recommends commenting out the `/200` line when it is set to 1. **Both halves of that advice are
-wrong.** The time column must be in ms and the `/200` must stay. The Python port therefore defaults
-to `time_units_per_ms=1.0` and this is pinned by
+The time column must therefore be in ms and the `/200` must stay. `simulate_recording()`
+(`simulate.py` 422) defaults to `time_units_per_ms=1.0` for exactly
+this reason, and the choice is pinned by
 `tests/test_simulate.py::test_simulate_recording_time_column_is_milliseconds`.
 
 ---
 
-## 5. Runtimes measured on this machine
+## 4. Runtimes measured on this machine
 
 Apple M1 MacBook Air, Python 3.11.15, numpy 2.4.6, scipy 1.17.1, pandas 3.0.5.
 
@@ -114,7 +97,7 @@ Apple M1 MacBook Air, Python 3.11.15, numpy 2.4.6, scipy 1.17.1, pandas 3.0.5.
 | §3.1.1 detection evaluation, one dataset | 0.69 s | |
 | §3.1.1 sweep, 100 seeds | 69 s | |
 | §3.1.2 one dataset (9 297 points) + fit | 0.02 s + 0.17 s | converges in 4 iterations |
-| §3.1.2 full three sweeps (R's replicate counts) | ≈ 4 min | 529 + 81 + 100 replicates |
+| §3.1.2 full three sweeps (default replicate counts) | ≈ 4 min | 529 + 81 + 100 replicates |
 | Synthetic recording generation | ≈ 4 s | 5.76 M normal draws |
 | Test suite (84 tests) | ≈ 60 s | |
 
@@ -125,49 +108,73 @@ than 100 keys at peak.
 
 ---
 
-## 6. The state of the original R code
+## 5. Known limitations, and what they mean for reproduction
 
-The paper's experiments are spread over 6 R files, 2 760 lines. Three points matter for
-reproducibility:
+Each item is a property of this implementation, measured here and pinned by a test wherever a test
+can reach it. They are the settings a reader has to respect when re-running the pipeline.
 
-1. **There are two copies of `hough.plane`, with different parameters.** The real-data pipeline
-   (`cm_hough_grid_8.R`) uses ρ step 0.05 and inlier tolerance 0.1; the simulation copy
-   (`fig5_detection_performance.R`) uses 0.5 and 1.0, and also tests one more degenerate-normal
-   condition. The factor of 10 is explained by the missing `/200` in the simulation. The Python port
-   exposes both as parameter sets (`RHO_STEP`/`INLIER_TOL` and `SIM_PRESET`) and there is a test
-   asserting they differ.
-2. **`iter.max = 30000` in the published script is too small.** It finds 3 of the 5 planes on the
-   experimental data. All results here use `max_iter=200000`.
-3. **The tail-regrow block (`cm_hough_grid_8.R:406-450`) is absent from the paper's description** of
-   Algorithm 4. It is in the code and runs unconditionally, but on the experimental data its loop
-   body never executes (all 320 points are already classified). It *does* execute in the simulation
-   study, where FNR ≠ 0. The port implements it, default-on, and there are tests that pin both the
-   on and off behaviour.
-
-### Files that exist but were not ported
-
-| R file | Status |
-|---|---|
-| `stomach_hough17_newton_square20.r` (§3.1.2, Figs 6–8) | **ported** — `simulate_circular.py`. Not ported from it: `plot.mode ∈ {4,5,8}` (3-D `rgl` renderings), `plot.mode ∈ {6,7}` (they error in R), and the dead `newton.cone`/`gra`/`hes` machinery. See `docs/code-paper-mapping.md`. |
-| `stomach_plane_anglediff14.r` | a different copy of the same material; not ported |
-| `spike_activation_time_plot2.R`, `BUTTER_example_plot_3.r` | figure-only scripts; their logic is folded into `examples/demo_pipeline.py` |
-| the gastric slow-wave analysis | not part of the method in the paper |
-
-### Documented bugs in the original, reproduced deliberately
-
-| # | Issue | Where | Reproduced? |
-|---|---|---|---|
-| 1 | Vote threshold is 9, not the 8 stated in the paper | `length > threshold*3` | yes |
-| 2 | `iter.max` too small to find all planes | R:265 | exposed via `max_iter`; examples pass 200000 |
-| 3 | `n̂ ← n̂·sign(n₁)` fails for `n₁ ≈ 0`, splitting a plane across φ ≈ 0° and 180° | R:279-281 | yes; documented as the main cause of high iteration counts |
-| 4 | `θ = asin(n₂/sin φ)` is ill-conditioned as φ → 0; `φ = 0` gives `NaN` | R:292 | yes, except that a deterministic key is substituted for the `NaN` key (geometry unaffected) |
-| 5 | `1:length(...)` degenerates to `1:0` when no plane is found; R then errors | R:353-358 | no — the port returns an empty result (documented at `rht.py:395`) |
-| 6 | FNR uses the wrong index (`num.true.neg = length(red.indices)`) | `fig5:369` | no — the port computes TN correctly; the variable is unused in R so nothing depends on it |
-| 7 | `make_synthetic_recording.R` time-column units | `TIME_UNITS_PER_MS <- 200` | no — corrected to ms, see section 4 |
+1. **The vote threshold is effectively 9, not the 8 stated in the paper.** `hough_plane()`
+   (`rht.py` 229) accepts a plane when `len(bucket) > vote_threshold * 3`, and
+   every vote appends three indices, so nine votes are needed. Counting votes against the paper's 8
+   is off by one.
+2. **`max_iter` must be at least 200 000 on the experimental recording.** At the 30 000 default only
+   3 of the 5 planes are found; the example scripts pass `max_iter=200000`.
+3. **The sign canonicalisation of the plane normal is ill-conditioned when its first component is
+   near zero.** The rule `n̂ ← n̂·sign(n₁)` cannot disambiguate in that case, so one plane can be
+   split between the φ ≈ 0° and φ ≈ 180° buckets. On this recording it is the main reason the
+   iteration count is high, and that count is a random variable rather than a constant — see
+   section 1.
+4. **`θ = asin(n₂ / sin φ)` is ill-conditioned as φ → 0 or 180°**, being a ratio of two small
+   quantities. Exactly φ = 0 would produce `NaN`; a deterministic key is substituted there instead,
+   which is safe because the key is only a label and the geometry is unaffected. The accumulator
+   keys also truncate **toward zero** rather than toward −∞, so that a negative ρ lands in the
+   bucket it belongs to.
+5. **An empty result is returned when no plane is accepted**, rather than an exception. Callers
+   should check `HoughResult.n_planes` before using the plane normals, since every downstream stage
+   assumes at least one plane.
+6. **The fit's starting point is fixed, not data-driven, and the fit is sensitive to it.** The
+   alternating minimisation in `fit_circular()` (`fit.py` 364) starts from
+   `(u, t₀) = (1, 1)` regardless of the data. That start is nearly exact for the §3.1.2 simulation
+   (true `v = 1`, `t₀ = 2`) but converges to a wrong local minimum when the source lies inside the
+   grid. `n_starts=2` adds a centroid-based start and keeps the lower final loss; `n_starts=1`, the
+   default, is the setting that reproduces Tables 2 and 4.
+7. **The tail-regrow block is part of this implementation and is on by default.** The block that
+   follows Algorithm 4 inside `hough_plane()` is not described in the paper; it is reached through
+   `regrow_master_plane=True` (the default) and accepts a further plane along the master normal when
+   it covers more than `SMALL_PLANE_THRESHOLD` points. On the experimental recording its loop body
+   never executes, because all 320 points are already classified — which is why switching it off
+   still produces results that look correct. In the §3.1 simulation study, where FNR ≠ 0, it does
+   execute. Tests pin both the on and the off behaviour, so the paper's figures should be read
+   against the setting they were produced with.
+8. **Two parameter sets appear in the pipeline and they are not interchangeable.** The defaults
+   (ρ step 0.05, inlier tolerance 0.1, two degenerate-normal component pairs) belong to the
+   real-data path, whose time axis is divided by 200; the simulation study uses `SIM_PRESET` (ρ step
+   0.5, inlier tolerance 1.0, all three component pairs) because its time axis is not divided by 200
+   and its `t` values are correspondingly larger. `evaluate_detection()` applies `SIM_PRESET`
+   automatically; a test asserts that the two sets differ.
+9. **The `r2` of §3.1.2 and the R² column of Table 4 are not the same quantity.** The circular fit is
+   handed the whole dataset, noise rows included, so an exactly correct model scores R² ≈ 0.953
+   rather than 1; scoring the signal points alone gives 1.0000000000.
+10. **The simulation replicates are independent here, and that matters.** The seed is derived from
+    the parameters and `p` is one of the factors, so with `p = 0` — which sweep modes 1 and 3 both
+    fix — an unshifted derivation would give every replicate the same dataset.
+    `accuracy_sweep()` therefore adds a per-replicate `seed_shift` by default;
+    `independent_replicates=False` removes it, and the spread between replicates is then exactly
+    zero.
+11. **The paper's FPR and FNR use every point as the denominator**, not the points of the relevant
+    class. `DetectionRates` reports that convention in `false_positive_rate` /
+    `false_negative_rate`, and the per-class rates in `false_positive_rate_among_noise` /
+    `false_negative_rate_among_signal`. Which convention is meant has to be decided before a figure
+    is compared with Fig. 5.
+12. **The spike table must be sorted stably** — see section 6. An unstable sort reorders the 47 tied
+    `t` values of the experimental recording, which changes the plane count and makes any replayed
+    sampling trace index the wrong points, silently.
+13. **The input's time column must be in milliseconds.** See section 3 for the measurement behind
+    this.
 
 ---
 
-## 7. Environment used for the numbers in this repository
+## 6. Environment used for the numbers in this repository
 
 ```
 Python 3.11.15
@@ -178,8 +185,8 @@ matplotlib 3.11.2
 pytest  9.1.1
 ```
 
-`pandas` is used only for tabular I/O and the spike table. One pandas default differs from R in a
-way that silently corrupts results: `sort_values()` is **not stable**, while R's `order()` is. The
-experimental data has 47 tied `t` values covering 98 points; `spikes_to_table()` therefore always
-passes `kind="stable"`. Without it the RHT finds only 4 planes instead of 5, and replayed sampling
-traces index the wrong points — with no error raised.
+`pandas` is used only for tabular I/O and the spike table. One of its defaults silently corrupts
+results here: `sort_values()` is **not stable**. The experimental data has 47 tied `t` values
+covering 98 points, and `spikes_to_table()` therefore always passes `kind="stable"`. Without it the
+RHT finds only 4 planes instead of 5, and replayed sampling traces index the wrong points — with no
+error raised.

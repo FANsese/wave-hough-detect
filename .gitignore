@@ -1,4 +1,4 @@
-# ── Python ───────────────────────────────────────────────────────────────
+# --- Python ---
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -8,30 +8,24 @@ dist/
 .venv/
 venv/
 
-# ── 运行产物 ──────────────────────────────────────────────────────────────
+# --- Run artifacts ---
 examples/out/
 tools/out/
-dev/out/
 *.png
 *.pdf
 
-# ── 数据（不随仓库分发）──────────────────────────────────────────────────
-# 论文 §3.2 的实验记录来自合作实验室，作者无权再分发，因此不入库。
-# 自己运行示例时把记录放在仓库根的 data/ 下，或设 WHD_DATA 环境变量。
+# --- Data (not distributed) ---
+# The experimental recording analysed in section 3.2 was obtained from a
+# collaborating laboratory and is not ours to redistribute, so it is not
+# committed. To run the examples on it, place it in data/ or point the
+# WHD_DATA environment variable at it. See data/README.md.
 data/*.csv
 data/*.mpg
 data/*.npy
 data/*.zip
 CM_PIN_Control_2N30_Aunor-txt.csv
 
-# ── dev/：只在本机使用的 R↔Python 逐位比对脚本 ──────────────────────────
-# 它们在发布版里【保留】—— 是"本实现与原始 R 实现行为一致"的证据，
-# 但需要本机的真实数据与 R 侧产物才能运行，因此默认不参与打包。
-# 若某天决定不公开这部分，取消下面三行的注释即可。
-# dev/verify_against_r/
-# dev/out/
-
-# ── 编辑器 / 系统 ────────────────────────────────────────────────────────
+# --- Editors / OS ---
 .vscode/
 .idea/
 .DS_Store

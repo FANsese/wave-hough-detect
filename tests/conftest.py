@@ -1,8 +1,9 @@
 """
-pytest 配置。
+pytest configuration.
 
-仓库用的是 src/ 布局，测试直接跑在源码树上（无需先 ``pip install -e .``），
-所以这里把 src/ 加进 import 路径。
+The repository uses a src/ layout and the tests run directly against the source
+tree (no ``pip install -e .`` needed first), so src/ is added to the import path
+here.
 """
 
 from __future__ import annotations

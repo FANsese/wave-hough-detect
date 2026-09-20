@@ -1,38 +1,50 @@
 """
-阶段 4b：96×96 圆波前仿真与拟合精度评估（论文 §3.1.2，图 6–8）
+Stage 4b: 96x96 circular-wavefront simulation and fit accuracy evaluation
+(section 3.1.2, Figs. 6-8)
 
-对应 R 代码：R_Codes/stomach_hough17_newton_square20.r
-  · ``stomach.sim.one2d``  :100-153   逐电极生成到达时刻
-  · ``stomach.sim2d``      :156-198   组装一次仿真数据集
-  · ``visualize2d``        :652-730   跑一次「仿真 + 拟合」，返回真值与估计
-  · ``relerror.plot``      :782-876   把估计值摊成待画的序列
-  · ``optimality.table``   :878-1010  按 plot.mode 做参数扫描
+What this module contains:
+  - generation of the per-electrode arrival times
+  - assembling one simulated dataset
+  - one "simulate + fit" run, returning ground truth and estimate
+  - flattening the estimates into plot-ready series
+  - a parameter sweep driven by ``plot.mode``
 
-【与 §3.1.1 的区别：这是另一套仿真，不是同一个东西】
+How it differs from section 3.1.1: this is a different simulation
+-----------------------------------------------------------------
+Section 3.1.1 (``simulate.py``) is a **linear wavefront** on an 8x8 grid, used to
+compute FPR / FNR (Fig. 5). This section is a **circular wavefront** on a 96x96
+grid, used to compute the estimation accuracy of the source position, the speed
+and the activation time (Figs. 6-8). Even the sampling structure differs: the
+arrival times here are **not** produced by walking along a line point by point.
+They are computed independently for every electrode as
+``t = t0 + distance + epsilon``.
 
-§3.1.1（``simulate.py``）是 8×8 网格上的**线性波前**，用来算 FPR/FNR（图 5）；
-本节是 96×96 网格上的**圆波前**，用来算源点/速度/激发时刻的估计精度（图 6–8）。
-两者连抽样结构都不一样：本节的到达时刻**不是**「沿一条线逐点走」，
-而是**每个电极独立算一次** ``t = t₀ + 距离 + ε``（R:121-129）。
+Ground truth
+------------
+The truth of this simulation is ``(x, y, miux, ts) = (48, 48, 1, 2)``. Note that
+the third entry is ``miux`` rather than ``v``: in this simulation miux = miuy = 1,
+so one grid cell takes one time unit, i.e. v = 1. The ground truth of the
+circular wavefront model is therefore
 
-【真值】
-``visualize2d`` 返回 ``truth = c(x, y, miux, ts) = c(48, 48, 1, 2)``（R:728）。
-注意第三项是 ``miux`` 而不是 ``v``：在这套仿真里 miux = miuy = 1，
-所以「走一格用 1 个时间单位」，即 v = 1。也就是说圆波前模型的真值是
+    t = sqrt((x - 48)^2 + (y - 48)^2) / 1 + 2 + epsilon
 
-    t = √((x−48)² + (y−48)²) / 1 + 2 + ε
+Why the fixed initial guess happens to be right here
+---------------------------------------------------
+The alternating minimisation starts at (u, t0) = (1, 1), with u = 1/v the
+slowness, while the ground truth of this simulation is v = 1 and t0 = 2: the
+initial guess is almost exactly on target. The failure mode measured in section
+3.1.1 (a source inside the grid converging to a wrong local minimum) therefore
+does **not** occur here. That is a property of the parameters chosen for this
+simulation, not an accident of the optimiser.
 
-【为什么 R 的初值在这里恰好是对的】
-拟合用的交替最小化从 (u, t₀) = (1, 1) 起步（u = 1/v 是慢度）。
-而这套仿真的真值是 v = 1、t₀ = 2 —— 初值几乎正中靶心。
-所以 §3.1.1 里我实测到的那个「源点在网格内就收敛到错误极小」的毛病，
-在这一节里【不会】发作。这不是巧合，是仿真参数挑出来的。
-
-【与 R 的差异：随机数发生器】
-同 ``simulate.py`` —— R 的 MT + Rejection 无法用 numpy 复现，所以是统计等价，
-不是逐位等价。这一节没有像阶段 2 那样做「导出抽样轨迹再重放」，
-因为这里的随机数调用点又多又分散（每格 1 次 rnorm + 条件 1 次 runif）。
-这是明确的边界，不要把它说成「与 R 一致」。
+RNG boundary
+------------
+As in ``simulate.py``, the datasets are statistically equivalent to the ones
+behind the figures but not bit-identical: the draws come from numpy's generator.
+This section has many and scattered random-number call sites (one normal draw per
+grid cell, plus a conditional uniform draw), so no replayable index trace is
+provided. This is an explicit boundary: do not describe these datasets as
+bit-identical to the ones behind the figures.
 """
 
 from __future__ import annotations
@@ -50,59 +62,61 @@ from .fit import (
     r_squared,
 )
 
-# ── 与 R 一致的固定量 ────────────────────────────────────────────────────
-SEED_BASE_CIRCULAR = 100          # R:158 `SEED_BASE = 100`
+# -- Fixed quantities ------------------------------------------------------
+SEED_BASE_CIRCULAR = 100          # base for the seed derived from the parameters
 
-#: §3.1.2 的真值（R:728 的 `c(x, y, miux, ts)`）。
+#: Ground truth of section 3.1.2, as (x, y, miux, ts).
 CIRCULAR_TRUTH = {"x0": 48.0, "y0": 48.0, "v": 1.0, "t0": 2.0}
 
-#: 论文 §3.1.2 用的仿真参数（R:653-662 的调用点）。
+#: Simulation parameters of section 3.1.2.
 PAPER_CIRCULAR_PARAMS = dict(
-    limit=96,          # 96×96 网格
-    time_max=96.0,     # 观测窗
-    ts=2.0,            # 源点激发时刻
-    x=48.0, y=48.0,    # 源点位置
-    u_x=1.0, u_y=1.0,  # 未使用（R 的形参保留了但函数体里没用到）
-    p=0.0,             # 漏检概率（图 8 扫的就是它）
-    noise_freq=1.0,    # 噪声率 λ_n
-    miu_x=1.0, miu_y=1.0,   # 各向异性传播：真值里的「速度」
-    sigma=1e-6,        # 测量误差标准差（图 7 固定它、图 8/σ 曲线扫它）
-    gap=1e6,           # 波前间隔的指数分布均值：大到只会产生一条波前
-    ratio=10.0,        # 未使用
+    limit=96,          # 96x96 grid
+    time_max=96.0,     # observation window
+    ts=2.0,            # source activation time
+    x=48.0, y=48.0,    # source position
+    u_x=1.0, u_y=1.0,  # unused (kept in the signature, not used in the body)
+    p=0.0,             # missed-detection probability (the quantity swept in Fig. 8)
+    noise_freq=1.0,    # noise rate lambda_n
+    miu_x=1.0, miu_y=1.0,   # anisotropic propagation: the "speed" of the truth
+    sigma=1e-6,        # measurement-error standard deviation (fixed in Fig. 7, swept in Fig. 8)
+    gap=1e6,           # mean of the exponential wavefront gap: so large that only one wavefront arises
+    ratio=10.0,        # unused
 )
 
-#: §3.1.2 的拟合设置（R:632-636 的 ``hybrid.optim``）。
+#: Fitting configuration of section 3.1.2.
 SEARCH_LOWER_CIRCULAR = np.array([-500.0, -500.0])
 SEARCH_UPPER_CIRCULAR = np.array([500.0, 500.0])
-CIRCULAR_EPS = 1e-8               # R:635 `epsilon = 1e-8`
+CIRCULAR_EPS = 1e-8               # convergence criterion of the alternating minimisation
 
-#: 论文的三条扫描（R:878-1010 的 ``plot.mode``）。
+#: The three sweeps of the paper.
 PLOT_MODES = {
-    # variable 是「画在横轴上的量」，param 是它在仿真器里的形参名
+    # variable is the quantity plotted on the horizontal axis, param its name in
+    # the simulator signature
     1: {"variable": "snr", "param": "noise_freq",
-        "label": "signal-to-noise ratio  λ_n（横轴取倒数）",
-        "grid": 2.0 ** (np.arange(-6, 17) / 2.0)},        # R:889-890
+        "label": "signal-to-noise ratio  λ_n (reciprocal on the axis)",
+        "grid": 2.0 ** (np.arange(-6, 17) / 2.0)},
     2: {"variable": "p", "param": "p",
         "label": "missing-observation probability  p",
-        "grid": np.arange(0, 9) / 10.0},                  # R:908-909
+        "grid": np.arange(0, 9) / 10.0},
     3: {"variable": "sigma", "param": "sigma",
         "label": "measurement error  σ",
-        "grid": np.arange(1, 11) / 10.0},                 # R:924-925
+        "grid": np.arange(1, 11) / 10.0},
 }
 
 
 def seed_circular(*, limit, time_max, ts, x, y, u_x, u_y, p, noise_freq,
                   miu_x, miu_y, sigma, seed_shift: int = 0) -> int:
     """
-    照抄 R 的种子推导（R:160-161）：
+    Derive the seed from the parameters:
 
-        set.seed(100 · limit · time.max · ts · x · y · u.x · u.y
-                 · p · noise.freq · miux · miuy · sigma)
+        seed(100 - limit - time.max - ts - x - y - u.x - u.y
+                - p - noise.freq - miux - miuy - sigma)
 
-    ★ R 这里【没有 seed.shift】，`stomach.sim2d` 的形参表里也没有它 ——
-      所以对同一组参数，R 的每一次「重复」都是**同一份数据集**。
-      本实现保留这个公式，但多加一个 ``seed_shift``（默认 0，即与 R 相同），
-      以便做真正独立的重复。相关的坑见 :func:`accuracy_sweep`。
+    ★ That formula contains no seed shift, so every repeated call with the same
+      parameters yields **one and the same dataset**. This implementation keeps
+      the formula but adds ``seed_shift`` (default 0, i.e. the same behaviour) so
+      that genuinely independent replicates can be produced. For the related trap
+      see :func:`accuracy_sweep`.
     """
     raw = (SEED_BASE_CIRCULAR * float(limit) * float(time_max) * float(ts)
            * float(x) * float(y) * float(u_x) * float(u_y) * float(p)
@@ -120,24 +134,29 @@ def simulate_circular_wavefronts(seed_shift: int = 0, *,
                                  gap: float = 1e6, ratio: float = 10.0,
                                  seed: int | None = None) -> pd.DataFrame:
     """
-    一次 96×96 圆波前仿真（对应 R 的 ``stomach.sim2d``，R:156-198）。
+    One 96x96 circular-wavefront simulation.
 
-    返回 DataFrame，列为 ``x, y, ts, z``；z = 1 表示真信号、0 表示噪声。
-    行按 ts **稳定排序**（R 的 ``order()`` 是稳定排序，R:195）。
+    Returns a DataFrame with columns ``x, y, ts, z``; z = 1 marks a true signal
+    and 0 marks noise. Rows are **stably sorted** by ts.
 
-    生成逻辑（严格照抄，包括随机数的调用顺序）：
+    Generation logic (including the order of the random draws):
 
-    1. **每个电极独立算一次**（R:109-139）。对 ``i, j ∈ 1..limit``：
-         · 无条件抽一个 ``e ~ N(0, σ)``
-         · ``t = ts + √(((i−x)/miux)² + ((j−y)/miuy)²) + e``
-           （源点处距离为 0，退化成 ``t = ts + e``）
-         · **只有当 t < time_max 时**才抽那个决定漏检的 ``U(0,1)``，
-           并以概率 p 丢弃 —— 这个条件很关键，它决定了随机数流的消耗量
-    2. 一条波前生成完后抽一次 ``Exp(mean=gap)`` 推进激发时刻（R:171）。
-       默认 ``gap = 1e6``，而观测窗只有 96，所以实际上**只会有一条波前**。
-    3. 噪声：时刻按 ``Exp(mean=1/λ_n)`` 的泊松流铺满观测窗（首尾各丢一个，
-       R:180-184），位置在网格内均匀独立抽取（R:186-187）。
-    4. 信号与噪声合并、按 ts 稳定排序。
+    1. **Every electrode is computed independently.** For ``i, j in 1..limit``:
+         - draw ``e ~ N(0, σ)`` unconditionally
+         - ``t = ts + sqrt(((i-x)/miux)**2 + ((j-y)/miuy)**2) + e``
+           (at the source the distance is 0, degenerating to ``t = ts + e``)
+         - **only when t < time_max** draw the ``U(0,1)`` that decides the missed
+           detection, and drop the point with probability p - this condition is
+           essential, since it determines how much of the random stream is
+           consumed
+    2. After one wavefront has been generated, one ``Exp(mean=gap)`` draw
+       advances the activation time. The default ``gap = 1e6`` is far larger than
+       the observation window of 96, so in practice **exactly one wavefront** is
+       produced.
+    3. Noise: times follow a Poisson process with ``Exp(mean=1/λ_n)``
+       inter-arrival times filling the observation window (first and last point
+       dropped), positions are drawn uniformly and independently on the grid.
+    4. Signal and noise are concatenated and stably sorted by ts.
     """
     if seed is None:
         seed = seed_circular(limit=limit, time_max=time_max, ts=ts, x=x, y=y,
@@ -147,7 +166,7 @@ def simulate_circular_wavefronts(seed_shift: int = 0, *,
     rng = np.random.default_rng(seed)
 
     grid = np.arange(1, limit + 1, dtype=float)
-    gi, gj = np.meshgrid(grid, grid, indexing="ij")     # i 行, j 列
+    gi, gj = np.meshgrid(grid, grid, indexing="ij")     # i = row, j = column
     travel = np.sqrt(((gi - x) / miu_x) ** 2 + ((gj - y) / miu_y) ** 2)
     at_source = (gi == x) & (gj == y)
 
@@ -157,21 +176,22 @@ def simulate_circular_wavefronts(seed_shift: int = 0, *,
 
     signal_start_ts = float(ts)
     while signal_start_ts < time_max:
-        # ── 逐电极（R 的双重 for 循环，行优先：i 外层、j 内层）──────────
+        # -- Per electrode (row-major: i outer, j inner) ------------------
         for i in range(limit):
             for j in range(limit):
                 e = float(rng.normal(0.0, sigma))
                 arrival = signal_start_ts + (
                     e if at_source[i, j] else travel[i, j] + e)
-                # ★ runif 只在 arrival < time_max 时才抽 —— 顺序不能改
+                # ★ the uniform draw happens only when arrival < time_max -
+                #   the order must not change
                 if arrival < time_max and rng.random() > p:
                     sig_x.append(gi[i, j])
                     sig_y.append(gj[i, j])
                     sig_t.append(arrival)
-        # ── 推进到下一条波前的激发时刻（R:171）──────────────────────
+        # -- advance to the next wavefront activation time ----------------
         signal_start_ts += float(rng.exponential(gap))
 
-    # ── 噪声（R:175-187）────────────────────────────────────────────────
+    # -- Noise ------------------------------------------------------------
     noise_t = [0.0]
     while noise_t[-1] < time_max:
         noise_t.append(noise_t[-1] + float(rng.exponential(1.0 / noise_freq)))
@@ -191,24 +211,24 @@ def simulate_circular_wavefronts(seed_shift: int = 0, *,
     return df.sort_values("ts", kind="stable").reset_index(drop=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════
-#  估计与评估
-# ══════════════════════════════════════════════════════════════════════════
+# ==========================================================================
+#  Estimation and evaluation
+# ==========================================================================
 
 @dataclass
 class WavefrontEstimate:
     """
-    一次「仿真 + 拟合」的全部结果，对应 R 的 ``visualize2d`` 返回值（R:728-729）。
+    Everything one "simulate + fit" run produces.
 
-    ``n_signal`` / ``n_noise`` / ``mean_travel_time`` 是 R 在 ``hybrid.optim``
-    之后追加的三列（R:673-674），用于画图的横轴。
+    ``n_signal`` / ``n_noise`` / ``mean_travel_time`` are three columns appended
+    after the fit; they are used for the horizontal axis of the plots.
     """
 
     x0: float
     y0: float
-    v: float                 # 速度（已由慢度换算）
+    v: float                 # speed (already converted from the slowness)
     t0: float
-    slowness: float          # 1/v —— R 的 pp[[3]]
+    slowness: float          # 1/v
     n_signal: int
     n_noise: int
     mean_travel_time: float
@@ -218,39 +238,46 @@ class WavefrontEstimate:
     r2: float
     truth: dict = field(default_factory=lambda: dict(CIRCULAR_TRUTH))
 
-    # ★ ``r2`` 与 ``loss`` 都是对【信号 + 噪声全部点】算的，因为 R 就是这么做的：
-    #   ``visualize2d`` 把整张 sim.matrix（含 z = 0 的噪声行）交给 hybrid.optim
-    #   （R:663, 671），损失函数里的 1[t>0] 又把它们全留下。
+    # ★ Both ``r2`` and ``loss`` are computed over *all* points (signal plus
+    #   noise), because the whole matrix - including the z = 0 noise rows - is
+    #   handed to the optimiser, and the 1[t>0] factor inside the loss keeps
+    #   every one of them.
     #
-    #   后果：在 §3.1.2 的典型配置下噪声只占 ~0.9%（9216 信号 + 81 噪声），
-    #   但它把 R² 从 1.000000 压到 0.953 —— 实测：
-    #       真值参数下 loss(含噪声) = 8.37e4，loss(仅信号) = 9.23e-9
-    #       真值参数下 R²(含噪声)   = 0.953330，R²(仅信号) = 1.0000000000
-    #   所以这里的 R² ≈ 0.95 表示"模型是精确的、数据里混了噪声"，
-    #   **不要**把它和论文 §3.2 表 4 那个 0.94 并列比较 —— 那是另一回事。
+    #   Consequence: in the typical section 3.1.2 configuration noise is only
+    #   about 0.9% of the points (9216 signal + 81 noise), yet it pushes R2 from
+    #   1.000000 down to 0.953. Measured at the ground-truth parameters:
+    #       loss (with noise) = 8.37e4,   loss (signal only) = 9.23e-9
+    #       R2   (with noise) = 0.953330, R2 (signal only) = 1.0000000000
+    #   So R2 ~ 0.95 here means "the model is exact and the data contains
+    #   noise". **Do not** set it side by side with the 0.94 of Table 4 in
+    #   section 3.2 - that is a different quantity.
 
     @property
     def snr(self) -> float:
         """
-        论文图 7 的横轴（R:788）。
+        The horizontal axis of Fig. 7.
 
-        ★ 名字叫「信噪比」，实际算的是 **真信号点数 / 噪声点数**：
+        ★ Despite the name, this is **number of true signal points / number of
+          noise points**:
 
-            snr = pp.estimates[i, 6] / pp.estimates[i, 7]
+              snr = n_signal / n_noise
 
-          在 ``accuracy_sweep`` 里，扫描值被 cbind 插到了最前面，所以
-          第 6、7 列分别是 ``n_signal`` 与 ``n_noise``。
-          这不是幅度意义上的信噪比，读图时要注意。
+          In ``accuracy_sweep`` the swept value is inserted as the first column
+          of the result table, so columns 6 and 7 are ``n_signal`` and
+          ``n_noise``. This is not a signal-to-noise ratio in the amplitude
+          sense; keep that in mind when reading the figure.
 
-          在 §3.1.2 的配置下 n_signal = 96×96 = 9216（全部电极都收得到），
-          n_noise ≈ λ_n × 96，所以 snr ≈ 96 / λ_n ——
-          与 R 实际扫出的范围 [≈0.375, ≈768] 吻合。
+          In the section 3.1.2 configuration n_signal = 96x96 = 9216 (every
+          electrode is reached) and n_noise ~ λ_n - 96, hence
+          snr ~ 96 / λ_n, which matches the range actually swept
+          ([~0.375, ~768]).
         """
         return self.n_signal / self.n_noise if self.n_noise else float("inf")
 
     @property
     def abs_error(self) -> dict:
-        """四个量的绝对误差（图 7/8 纵轴实际画的就是估计值本身，见下）。"""
+        """Absolute error of the four quantities (the vertical axes of Figs. 7/8
+        actually plot the estimates themselves; see below)."""
         t = self.truth
         return {"x0": abs(self.x0 - t["x0"]), "y0": abs(self.y0 - t["y0"]),
                 "v": abs(self.v - t["v"]), "t0": abs(self.t0 - t["t0"])}
@@ -258,12 +285,13 @@ class WavefrontEstimate:
     @property
     def rel_error(self) -> dict:
         """
-        相对误差 —— R 里对应 ``relerror.plot`` 的 ``plot.value = FALSE`` 分支
-        （R:796-801）：``|est − truth| / truth``。
+        Relative error: ``|est - truth| / truth``.
 
-        ★ 这个分支在 R 里【不可达】：三个活跃调用都传了 ``plot.value = TRUE``
-          （R:891/911/931），所以 R 画的其实是**绝对估计值**，不是相对误差。
-          函数名 ``relerror.plot`` 因此是名不副实的。这里两个都给出来。
+        ★ In the paper's plotting this branch is never taken: all three active
+          sweep configurations select absolute values, so what is plotted is the
+          **absolute estimate**, not a relative error, and the name of the
+          plotting routine that column comes from is therefore a misnomer. Both
+          are provided here.
         """
         t = self.truth
         return {"x0": abs(self.x0 - t["x0"]) / t["x0"],
@@ -285,19 +313,22 @@ def estimate_circular_wavefront(df: pd.DataFrame, *, truth: dict | None = None,
                                 eps: float = CIRCULAR_EPS,
                                 n_starts: int = 1) -> WavefrontEstimate:
     """
-    对一次仿真结果跑圆波前拟合（对应 R 的 ``hybrid.optim(sim.matrix)``，R:671）。
+    Fit the circular wavefront model to one simulation result.
 
-    ★ 搜索窗是 **±500**（R:632），不是真数据管线的 ±50；收敛判据是 **1e-8**
-      （R:635），比真数据管线的 1e-6 严得多。两者不能混用。
+    ★ The search window is **+/-500**, not the +/-50 of the real-data pipeline, and
+      the convergence criterion is **1e-8**, far stricter than the 1e-6 used
+      there. The two settings must not be mixed.
     """
     pts = df[["x", "y", "ts"]].to_numpy(dtype=float)
-    trace: list = []            # 只用来数轮数，不参与计算
+    trace: list = []            # only used to count the rounds, not part of the computation
     p = hybrid_optim(pts, lower=SEARCH_LOWER_CIRCULAR,
                      upper=SEARCH_UPPER_CIRCULAR, max_iter=max_iter, eps=eps,
                      trace=trace)
-    # 多起点（本实现的扩展，默认不用）：n_starts >= 2 时额外试一次数据驱动的初值。
-    # 在 §3.1.2 里 R 的初值 (u, t₀) = (1, 1) 本来就几乎正中真值 (v = 1, t₀ = 2)，
-    # 所以这里默认不需要它；保留这个开关是为了别的量级的数据。
+    # Multi-start (an extension of this implementation, off by default): with
+    # n_starts >= 2 an additional data-driven initial guess is tried. In section
+    # 3.1.2 the fixed initial guess (u, t0) = (1, 1) is already almost exactly on
+    # the truth (v = 1, t0 = 2), so it is not needed here; the switch is kept for
+    # data of a different order of magnitude.
     if n_starts >= 2:
         from .fit import centroid_initial_guess
         u0, t00 = centroid_initial_guess(pts)
@@ -322,10 +353,10 @@ def estimate_circular_wavefront(df: pd.DataFrame, *, truth: dict | None = None,
 def evaluate_circular(seed_shift: int = 0, *, params: dict | None = None,
                       **overrides) -> WavefrontEstimate:
     """
-    跑一次完整的「仿真 + 拟合」—— 对应 R 的 ``visualize2d()``（R:652-730）。
+    Run one complete "simulate + fit".
 
-    ``params`` 默认取 :data:`PAPER_CIRCULAR_PARAMS`，``overrides`` 覆盖其中若干项
-    （扫描的时候就是这么用的）。
+    ``params`` defaults to :data:`PAPER_CIRCULAR_PARAMS`; ``overrides`` replaces
+    individual entries of it (which is how the sweeps are driven).
     """
     prm = dict(PAPER_CIRCULAR_PARAMS)
     if params:
@@ -340,38 +371,44 @@ def accuracy_sweep(plot_mode: int = 1, *, n_replicates: int | None = None,
                    independent_replicates: bool = True,
                    params: dict | None = None) -> pd.DataFrame:
     """
-    按 ``plot.mode`` 做参数扫描 —— 对应 R 的 ``optimality.table()``（R:878-1010）。
+    Parameter sweep driven by ``plot.mode``.
 
     ``plot_mode``
-        1 —— 扫噪声率 λ_n（图 7），固定 p = 0、σ = 1e-6（R:889-890）
-        2 —— 扫漏检概率 p（图 8），固定 λ_n = 1、σ = 1e-6（R:908-909）
-        3 —— 扫测量误差 σ，固定 λ_n = 1、p = 0（R:924-925）
+        1 - sweep the noise rate λ_n (Fig. 7), holding p = 0 and σ = 1e-6
+        2 - sweep the missed-detection probability p (Fig. 8), holding λ_n = 1
+            and σ = 1e-6
+        3 - sweep the measurement error σ, holding λ_n = 1 and p = 0
 
     ``n_replicates``
-        每个网格点重复几次。默认取 R 提交时的重复数（mode 1 → 23、
-        mode 2 → 9、mode 3 → 10）。
+        Number of replicates per grid point. Defaults to the replicate counts
+        used for the paper (mode 1 -> 23, mode 2 -> 9, mode 3 -> 10).
 
     ``independent_replicates``
-        ★★ 这是本实现与 R 的**一处有意差异**，必须理解清楚。
+        ★★ This is an **intentional difference** from the setup behind the
+        figures and has to be understood.
 
-        R 的 ``stomach.sim2d`` 里种子是 ``100·Π(参数)``，**没有 seed.shift**，
-        而 ``optimality.table`` 又是对同一组参数反复调用 —— 所以 R 的「重复」
-        根本不是重复，而是**同一份数据集**。更糟的是当 **p = 0** 时种子恒为 0
-        （乘积里有一项是 p），于是 mode 1 与 mode 3 的整批点共享同一条随机数流：
-        每个电极的测量误差 ε 都是同一个序列，只是整体乘了 σ。
-        后果是这两个模式的曲线**异常平滑**，误差棒不代表重复间的波动。
+        The seed is ``100 - product(parameters)`` with no shift, and a sweep
+        calls the simulator repeatedly with the same set of parameters - so those
+        "replicates" are not replicates at all but **one and the same dataset**.
+        Worse, with **p = 0** the seed is identically 0 (one factor of the product
+        is p), so the entire mode 1 and mode 3 batches share a single random
+        stream: the measurement error ε of every electrode is the same sequence,
+        merely scaled by σ. The consequence is that those two curves are
+        **unnaturally smooth**, and the error bars do not represent scatter
+        between replicates.
 
-        默认 ``True`` —— 给每个重复加一个不同的 ``seed_shift``，得到真正独立的
-        重复。想要复现 R 的行为（看那个平滑效应）就置 ``False``。
+        The default ``True`` adds a different ``seed_shift`` to every replicate,
+        giving genuinely independent replicates. Set it to ``False`` to reproduce
+        the smooth behaviour described above.
     """
     if plot_mode not in PLOT_MODES:
-        raise ValueError(f"plot_mode 必须是 {sorted(PLOT_MODES)} 之一")
+        raise ValueError(f"plot_mode must be one of {sorted(PLOT_MODES)}")
     spec = PLOT_MODES[plot_mode]
     grid = spec["grid"]
     n_rep = n_replicates if n_replicates is not None else {
         1: 23, 2: 9, 3: 10}[plot_mode]
 
-    # 每个模式扫一个量、固定另外两个（R:889-890 / 908-909 / 924-925）
+    # each mode sweeps one quantity and holds the other two fixed
     var = spec["variable"]
     param = spec["param"]
     fixed = {"snr": {"p": 0.0, "sigma": 1e-6},

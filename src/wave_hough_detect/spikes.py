@@ -1,13 +1,13 @@
 """
-阶段 1：尖峰检测（论文 §2.1 / Algorithm 1）
+Stage 1: spike detection (section 2.1 / Algorithm 1)
 
-对应 R 代码：R_Codes/cm_hough_grid_8.R 第 18-117 行
-本模块是逐行移植，行为必须与 R 完全一致。
-
-移植时容易出错的三个点（都在下面标了 ★）：
-  ★1  R 的 filter() 是单向 IIR，不是 scipy.signal.filtfilt（零相位双向）
-  ★2  R 的 quantile(type=7) 与 numpy.quantile(线性插值) 相同
-  ★3  R 的 which.min 遇并列取【第一个】，numpy.argmin 也是
+Three points that are easy to get wrong (each marked with a star below):
+  ★1  The channel filter is a one-directional IIR filter, not a zero-phase
+      forward-backward filter such as ``scipy.signal.filtfilt``.
+  ★2  The spike threshold uses type-7 linear-interpolation quantiles, i.e.
+      ``np.quantile(..., method="linear")``.
+  ★3  ``np.argmin`` returns the first index among ties, and the detector
+      depends on exactly that tie-breaking rule.
 """
 
 from __future__ import annotations
@@ -19,20 +19,19 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, lfilter
 
-# ── 论文/原代码里的固定参数 ────────────────────────────────────────────────
+# -- Fixed parameters of the pipeline --------------------------------------
 GRID_SIDE = 8                 # 8 x 8 MEA
-BUTTER_ORDER = 2              # signal::butter(2, ...)  —— n 就是阶数
-BUTTER_CUTOFF = 1 / 500       # W = 相对 Nyquist 的比例
-SPIKE_QUANTILE = 0.0005       # 0.05 分位（= 上尾 99.95 分位）
-EXCLUSION_HALF = 500          # 检出后屏蔽 ±500 个样本
-MAX_SPIKES_PER_CHANNEL = 200  # 原代码的 for (k in 1:200)
-TIME_SCALE = 200              # 原代码 line 115: ts.observ / 200
+BUTTER_ORDER = 2              # filter order n
+BUTTER_CUTOFF = 1 / 500       # W = fraction of the Nyquist frequency
+SPIKE_QUANTILE = 0.0005       # 0.05th percentile (= upper-tail 99.95th percentile)
+EXCLUSION_HALF = 500          # samples blanked on either side after a detection
+MAX_SPIKES_PER_CHANNEL = 200  # upper bound on the number of detections per channel
+TIME_SCALE = 200              # divisor applied to spike times before the Hough stage
 
 
 def channel_to_xy(ch: int, side: int = GRID_SIDE) -> tuple[int, int]:
     """
-    通道号 -> (x, y)，与原代码 cm_hough_grid_8.R:82-88 完全一致。
-    行优先：x 为行，y 为列。
+    Channel number -> (x, y). Row-major: x is the row, y is the column.
 
     >>> channel_to_xy(1), channel_to_xy(8), channel_to_xy(9), channel_to_xy(64)
     ((1, 1), (1, 8), (2, 1), (8, 8))
@@ -44,11 +43,11 @@ def channel_to_xy(ch: int, side: int = GRID_SIDE) -> tuple[int, int]:
 
 @dataclass
 class Recording:
-    """一份 MEA 记录。"""
+    """One MEA recording."""
 
-    time: np.ndarray          # (n_samples,)  时间轴，单位 ms
-    voltage: np.ndarray       # (n_samples, 64) 电压，单位 mV
-    channels: list[str]       # 列名，形如 ["Ch01", ..., "Ch64"]
+    time: np.ndarray          # (n_samples,) time axis in ms
+    voltage: np.ndarray       # (n_samples, 64) voltage in mV
+    channels: list[str]       # column names, of the form ["Ch01", ..., "Ch64"]
     sampling_rate_hz: float
 
     @property
@@ -62,12 +61,15 @@ class Recording:
 
 def load_recording(path: str | Path) -> Recording:
     """
-    读入 MEA 的 CSV 导出文件。
+    Read a CSV export of an MEA recording.
 
-    原始文件列名形如 ``T(ms), CH1(mV), ..., CH64(mV)``。
-    原 R 代码用 ``as.integer(substr(name, 3, 4))`` 解析通道号，
-    但 "CH1(mV)" 的第 3-4 个字符是 "1("，as.integer("1(") 返回 NA —— 会崩。
-    这里统一重命名为 ``Ch01..Ch64``，使 substr(3,4) 得到 "01".."64"。
+    The raw column names look like ``T(ms), CH1(mV), ..., CH64(mV)``. Parsing a
+    channel number out of such a name by taking the two characters starting at
+    offset 3 is impossible: for "CH1(mV)" those characters are "1(", which is not
+    a number, so the channel index would come out missing and every downstream
+    indexing operation would fail. The columns are therefore renamed uniformly to
+    ``Ch01..Ch64``, which makes the two characters starting at offset 3 exactly
+    the two-digit channel index ("01".."64").
     """
     df = pd.read_csv(path)
     time = df.iloc[:, 0].to_numpy(dtype=float)
@@ -76,7 +78,7 @@ def load_recording(path: str | Path) -> Recording:
     n_ch = voltage.shape[1]
     channels = [f"Ch{i:02d}" for i in range(1, n_ch + 1)]
 
-    # 采样率由时间轴步长推得（原始数据 0.1 ms -> 10 kHz）
+    # sampling rate inferred from the time-axis step (raw data: 0.1 ms -> 10 kHz)
     dt = float(np.median(np.diff(time)))
     rate = 1000.0 / dt if dt > 0 else np.nan
 
@@ -87,10 +89,11 @@ def load_recording(path: str | Path) -> Recording:
 def butter_highpass(order: int = BUTTER_ORDER,
                     cutoff: float = BUTTER_CUTOFF) -> tuple[np.ndarray, np.ndarray]:
     """
-    设计 Butterworth 高通滤波器，等价于 R 的 ``signal::butter(2, 1/500, type="high")``。
+    Design a Butterworth high-pass filter.
 
-    注意 ``cutoff`` 是【相对 Nyquist 的比例】，不是 Hz。
-    10 kHz 采样 -> Nyquist 5 kHz -> cutoff = 1/500 即 10 Hz。
+    Note that ``cutoff`` is a fraction of the Nyquist frequency, not a frequency
+    in Hz. At 10 kHz sampling the Nyquist frequency is 5 kHz, so cutoff = 1/500
+    corresponds to 10 Hz.
     """
     return butter(order, cutoff, btype="high")
 
@@ -98,11 +101,13 @@ def butter_highpass(order: int = BUTTER_ORDER,
 def filter_channel(x: np.ndarray,
                    ba: tuple[np.ndarray, np.ndarray]) -> np.ndarray:
     """
-    单向 IIR 滤波。
+    One-directional IIR filtering.
 
-    ★1 必须用 lfilter（单向），不能用 filtfilt（零相位双向）。
-       R 的 ``filter()`` 是单向的，初始条件为 0；``lfilter`` 行为相同。
-       用 filtfilt 会得到不同的结果，且相位特性完全改变。
+    ★1 ``lfilter`` (one-directional) must be used here, not ``filtfilt``
+       (zero-phase, forward-backward). This pipeline defines stage 1 as a causal
+       filter with zero initial conditions, which is exactly what ``lfilter``
+       computes. ``filtfilt`` returns different values and completely changes
+       the phase response.
     """
     b, a = ba
     return lfilter(b, a, x)
@@ -114,20 +119,24 @@ def detect_spikes(filtered: np.ndarray,
                   quantile: float = SPIKE_QUANTILE,
                   max_spikes: int = MAX_SPIKES_PER_CHANNEL) -> np.ndarray:
     """
-    在单通道的滤波后信号上检测尖峰，对应原代码 line 59, 66-99。
+    Detect spikes in one channel's filtered signal.
 
-    算法：
-      阈值 = quantile(信号, 0.0005)
-      循环：
-        找全局最小点；若它 >= 阈值则停止
-        记录该点时刻
-        把该点 ±exclusion_half 个样本置为 +1e6（屏蔽，避免重复检出）
+    Algorithm:
+      threshold = quantile(signal, 0.0005)
+      loop:
+        find the global minimum; stop once it is >= threshold
+        record the time of that sample
+        set the samples within +/- exclusion_half of it to +1e6 (blanking, so
+        that the same spike is not detected twice)
 
-    ★2 ``np.quantile(..., method="linear")`` 就是 R 默认的 type=7 分位数，
-       两者数值完全相同。
-    ★3 ``np.argmin`` 遇并列取第一个，与 R 的 ``which.min`` 一致。
+    ★2 ``np.quantile(..., method="linear")`` selects the type-7
+       linear-interpolation quantile: the threshold below is computed with
+       exactly this convention.
+    ★3 ``np.argmin`` returns the first index among ties, and the detector relies
+       on that rule to break ties between equal minima.
 
-     extracellular 场电位本身是负向的，所以用 argmin 而非 argmax。
+    Extracellular field potentials are negative-going, hence argmin rather than
+    argmax.
     """
     threshold = np.quantile(filtered, quantile, method="linear")
 
@@ -149,9 +158,9 @@ def detect_spikes(filtered: np.ndarray,
 
 def detect_all_channels(rec: Recording) -> tuple[list[np.ndarray], np.ndarray]:
     """
-    对 64 个通道逐个跑检测。
+    Run the detection on all 64 channels, one at a time.
 
-    返回 (每个通道的尖峰时刻列表, 滤波后的信号矩阵)。
+    Returns (list of spike times per channel, filtered signal matrix).
     """
     ba = butter_highpass()
     filtered = np.empty_like(rec.voltage)
@@ -169,11 +178,13 @@ def spikes_to_table(spike_times: list[np.ndarray],
                     channels: list[str],
                     time_scale: float = TIME_SCALE) -> pd.DataFrame:
     """
-    把逐通道的尖峰时刻组装成霍夫变换需要的 (x, y, t) 三元组表。
+    Assemble the per-channel spike times into the (x, y, t) triple table that the
+    Hough transform consumes.
 
-    ``time_scale`` 对应原代码 line 115 的 ``ts.observ / 200``。
-    这个缩放【不是可选的】：不缩放的话平面内标准差约 5.35，
-    而霍夫的内点容忍度只有 0.1，一个平面都找不到（已实测验证）。
+    ``time_scale`` is the divisor applied to every spike time. This scaling is
+    not optional: without it the within-plane standard deviation is about 5.35,
+    while the Hough inlier tolerance is only 0.1, so not a single plane is found
+    (verified by measurement).
     """
     rows = []
     for i, times in enumerate(spike_times, start=1):
@@ -185,8 +196,11 @@ def spikes_to_table(spike_times: list[np.ndarray],
 
     df = pd.DataFrame(rows, columns=["x", "y", "t", "channel"])
 
-    # ★ 必须用稳定排序。R 的 order() 是稳定的，而 pandas 的 sort_values()
-    #   默认是快排（不稳定）。这份数据里有 47 个 t 值存在并列（涉及 98 个点），
-    #   不稳定排序会让并列点的顺序与 R 不同 —— 后续任何按下标索引的操作
-    #   （例如 R 导出的抽样轨迹）都会指向错误的点，而且不会报错，只会静默出错。
+    # ★ A stable sort is mandatory here. pandas ``sort_values()`` uses quicksort
+    #   (unstable) by default, while the point order of this pipeline has to keep
+    #   the input order among equal t values. This dataset contains 47 tied t
+    #   values (involving 98 points); an unstable sort would order those tied
+    #   points differently, and any downstream operation that indexes by position
+    #   (for example replaying a sampled index trace) would then point at the
+    #   wrong points - without raising an error, silently.
     return df.sort_values("t", kind="stable").reset_index(drop=True)

@@ -1,8 +1,9 @@
 """
-阶段 3（波前模型拟合）的单元测试。
+Unit tests for stage 3 (wavefront model fitting).
 
-用**解析构造**的数据做检验：先给定 (x0, y0, v, t0) 生成精确的到达时刻，
-再看拟合能不能把它们反解回来。这类测试不需要任何外部数据。
+The data are built **analytically**: (x0, y0, v, t0) are chosen first and the
+exact arrival times are generated from them, and the fit then has to recover
+them. Tests of this kind need no external data at all.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from wave_hough_detect import (
 
 
 def circular_arrival(x0, y0, v, t0, side=GRID_SIDE):
-    """由解析模型生成 (x, y, t) 点集：t = √((x−x0)²+(y−y0)²)/v + t0。"""
+    """Generate the (x, y, t) point set from the analytic model: t = sqrt((x-x0)^2 + (y-y0)^2)/v + t0."""
     xs, ys = np.meshgrid(np.arange(1, side + 1), np.arange(1, side + 1),
                          indexing="ij")
     xs = xs.ravel().astype(float)
@@ -34,7 +35,7 @@ def circular_arrival(x0, y0, v, t0, side=GRID_SIDE):
 
 
 def linear_arrival(a, b, c, side=GRID_SIDE):
-    """由解析模型生成 (x, y, t)：t = ãx + b̃y + c̃。"""
+    """Generate the (x, y, t) point set from the analytic model: t = a_tilde*x + b_tilde*y + c_tilde."""
     xs, ys = np.meshgrid(np.arange(1, side + 1), np.arange(1, side + 1),
                          indexing="ij")
     xs = xs.ravel().astype(float)
@@ -43,16 +44,16 @@ def linear_arrival(a, b, c, side=GRID_SIDE):
     return np.column_stack([xs, ys, t])
 
 
-# ── build_result_array / plane_points ────────────────────────────────────
-
+# --- build_result_array / plane_points ---
 def test_build_result_array_scales_time_back_to_ms():
     """
-    ★ 两段尺度切换的后半段：result.array 里存的必须是【乘回 200】的 ms。
-      少乘这一步，拟合出来的 v 会差 200 倍。
+    ★ The second half of the two-stage scale switch: what result.array stores must
+      be milliseconds, i.e. the Hough-scale time multiplied back by 200. Missing
+      this step leaves the fitted v wrong by a factor of 200.
     """
     x = np.array([1.0, 2.0])
     y = np.array([1.0, 3.0])
-    t_hough = np.array([4.0, 5.0])          # /200 尺度
+    t_hough = np.array([4.0, 5.0])          # Hough scale (time / 200)
     pid = np.array([1, 1])
     arr = build_result_array(x, y, t_hough, pid, n_planes=1)
     assert arr.shape == (GRID_SIDE, GRID_SIDE, 1)
@@ -65,20 +66,21 @@ def test_build_result_array_empty_slots_are_minus_one():
     arr = build_result_array(np.array([1.0]), np.array([1.0]),
                              np.array([2.0]), np.array([1]), n_planes=1)
     assert arr[0, 0, 0] == pytest.approx(400.0)
-    assert np.all(arr[1:, :, :] == -1.0)     # R 用 array(-1, ...) 初始化
+    assert np.all(arr[1:, :, :] == -1.0)     # empty slots are initialised to -1
 
 
 def test_build_result_array_skips_unclassified_points():
     arr = build_result_array(np.array([1.0, 2.0]), np.array([1.0, 2.0]),
                              np.array([3.0, 4.0]), np.array([1, 0]), n_planes=1)
     assert arr[0, 0, 0] == pytest.approx(600.0)
-    assert arr[1, 1, 0] == -1.0              # plane_indices == 0 → 跳过
+    assert arr[1, 1, 0] == -1.0              # plane_indices == 0 -> skipped
 
 
 def test_build_result_array_later_writes_win():
     """
-    同一 (x, y) 在同一平面出现两次时，后写入的覆盖先写入的
-    —— 复现 R 的同名下标赋值语义（不是累加、不是取最大）。
+    When the same (x, y) appears twice in the same plane, the later write wins
+    over the earlier one - plain indexed assignment, neither accumulation nor a
+    maximum.
     """
     arr = build_result_array(np.array([1.0, 1.0]), np.array([1.0, 1.0]),
                              np.array([3.0, 7.0]), np.array([1, 1]), n_planes=1)
@@ -90,14 +92,13 @@ def test_plane_points_unfolds_column_major_and_drops_empty_slots():
                              np.array([1.0, 2.0]), np.array([1, 1]), n_planes=1)
     p = plane_points(arr, 1)
     assert p.shape == (2, 3)
-    # R 的 as.vector 是列主序；这里必须与之一致，否则点序不同
+    # the array must be unfolded in column-major order, otherwise the point order changes
     assert p[:, 0].tolist() == [1.0, 3.0]
     assert p[:, 1].tolist() == [2.0, 4.0]
     assert p[:, 2].tolist() == [200.0, 400.0]
 
 
-# ── 损失函数 ─────────────────────────────────────────────────────────────
-
+# --- loss functions ---
 def test_circular_loss_is_zero_on_exact_model():
     pts = circular_arrival(2.5, 3.5, 0.45, 100.0)
     assert circular_loss([2.5, 3.5, 1 / 0.45, 100.0], pts) == pytest.approx(0.0)
@@ -105,9 +106,11 @@ def test_circular_loss_is_zero_on_exact_model():
 
 def test_circular_loss_third_slot_is_slowness_not_speed():
     """
-    ★ R 的 p[[3]] 存的是 u = 1/v（慢度），目标函数里是【乘】u。
-      论文式 (3) 写的是【除 v】。两者等价，但代码里是乘。
-      把 u 当成速度传进去会得到一个有限但完全错误的损失值 —— 不会报错。
+    ★ The slot trap: parameter slot 3 holds u = 1/v (the slowness) and the
+      objective function multiplies by u. Equation (3) of the paper divides by v.
+      The two are equivalent, but the code multiplies.
+      Passing u where the speed belongs yields a finite but completely wrong loss
+      value - it raises no error.
     """
     pts = circular_arrival(2.5, 3.5, 0.45, 100.0)
     assert circular_loss([2.5, 3.5, 1 / 0.45, 100.0], pts) == pytest.approx(0.0, abs=1e-9)
@@ -125,24 +128,28 @@ def test_r_squared_is_one_on_exact_model():
     assert r2 == pytest.approx(1.0, abs=1e-12)
 
 
-# ── 圆波前拟合 ───────────────────────────────────────────────────────────
-
-#: 论文 §3.2 的量级：源点在网格之外约 50 格，t 在几百毫秒量级。
-#: ★ 圆模型拟合在这个量级上才工作 —— 这是 R 的初值 (u, t0) = (1, 1) 决定的，
-#:   换量级就会卡住，见 test_fit_circular_needs_a_good_start_inside_grid。
+# --- circular wavefront fitting ---
+#: The magnitude used in §3.2 of the paper: the source lies about 50 cells
+#: outside the grid and t is of the order of several hundred milliseconds.
+#: ★ The circular fit only works at this magnitude because the default initial
+#:   guess is (u, t0) = (1, 1); at another magnitude it stalls, see
+#:   test_fit_circular_needs_a_good_start_inside_grid.
 PAPER_LIKE = dict(x0=-3.0, y0=-50.0, v=0.45, t0=800.0)
 
 
 def test_fit_circular_recovers_known_parameters():
     """
-    ★ 容差不是随手定的，它反映 R 的停机判据：
+    ★ The tolerance is not arbitrary, it reflects the stopping rule of the fit:
 
-      R 的收敛条件是 ``‖Θ−Θ̂‖/‖Θ‖ < 1e-6``（cm_hough_grid_8.R:672），
-      而 Θ 里含 t₀ ≈ 800，所以 t₀ 变化 8e-4 就足以触发停机，
-      此时 x₀ 还差约 0.008。把它收紧到 1e-8 就能收敛到 1e-4 以内
-      （见 test_fit_circular_precision_is_limited_by_the_stopping_rule）。
+      Convergence requires the relative change ``||Theta - Theta_hat|| / ||Theta||
+      < 1e-6`` (the default ``eps`` of the alternating minimisation), and Theta
+      contains t0 ~ 800, so a change of 8e-4 in t0 is already enough to trigger
+      the stop, at which point x0 is still off by about 0.008. Tightening eps to
+      1e-8 converges to within 1e-4 (see
+      test_fit_circular_precision_is_limited_by_the_stopping_rule).
 
-      所以"拟合结果与真值差 0.008"是 R 的行为，不是移植误差。
+      So "the fit differs from the truth by 0.008" is the behaviour of the
+      stopping rule, not an error in the fit.
     """
     truth = PAPER_LIKE
     pts = circular_arrival(**truth)
@@ -156,9 +163,9 @@ def test_fit_circular_recovers_known_parameters():
 
 
 def test_fit_circular_precision_is_limited_by_the_stopping_rule():
-    """把停机判据收紧 → 精度随之提高，证明上面的 0.008 来自停机判据而非算错。"""
+    """Tightening the stopping rule raises the precision, which shows that the 0.008 above comes from the stopping rule and not from a wrong computation."""
     pts = circular_arrival(**PAPER_LIKE)
-    loose = fit_circular(pts, eps=1e-6)     # R 真数据管线的取值
+    loose = fit_circular(pts, eps=1e-6)     # the value used by the real-data pipeline
     tight = fit_circular(pts, eps=1e-10)
     assert abs(loose.x0 - PAPER_LIKE["x0"]) > abs(tight.x0 - PAPER_LIKE["x0"])
     assert tight.x0 == pytest.approx(PAPER_LIKE["x0"], abs=1e-4)
@@ -167,8 +174,9 @@ def test_fit_circular_precision_is_limited_by_the_stopping_rule():
 
 def test_fit_circular_reports_speed_not_slowness():
     """
-    ★ vt_optim 的槽位陷阱：R 把斜率（= 1/v）存回了名为 v 的位置。
-      Python 版的 CircularFit.v 必须是【速度】，不能直接把槽位透出来。
+    ★ The slot trap of the optimiser: the slope (= 1/v) is stored back into the
+      position that is named v. CircularFit.v must be the speed, so the slot must
+      not be exposed directly.
     """
     pts = circular_arrival(**PAPER_LIKE)
     f = fit_circular(pts)
@@ -177,7 +185,7 @@ def test_fit_circular_reports_speed_not_slowness():
 
 
 def test_fit_circular_handles_source_far_outside_grid():
-    """源点在网格外（论文真数据的实际情况：y0 = −50），逐条波前都该收敛。"""
+    """The source lies outside the grid (y0 = -50, the situation of the real data in the paper); every wavefront must converge."""
     for t0 in (800.0, 2054.0, 7647.0):
         pts = circular_arrival(-3.0, -50.0, 0.45, t0)
         f = fit_circular(pts)
@@ -187,26 +195,31 @@ def test_fit_circular_handles_source_far_outside_grid():
 
 def test_fit_circular_needs_a_good_start_inside_grid():
     """
-    ★★ 继承自 R 的收敛脆弱性，必须记录下来：
+    ★★ The convergence fragility of the default start, recorded here:
 
-      交替最小化的初值是 (u, t0) = (1, 1)，与数据无关。当源点落在网格【内部】
-      时，第一轮网格搜索会被推向搜索窗边界并且再也爬不回来。
+      The alternating minimisation starts from (u, t0) = (1, 1), independently of
+      the data. When the source lies *inside* the grid, the first grid search is
+      pushed to the boundary of the search window and never climbs back.
 
-      默认 n_starts=1 = 完全复现 R（也是复现论文表 2 的前提），这时会失败；
-      n_starts=2 额外试一次数据驱动的初值（以质心为临时中心），就能精确恢复。
+      The default n_starts=1 (the value required to reproduce Tables 2 and 4 of
+      the paper) fails on such a case; n_starts=2 additionally tries one
+      data-driven start (with the centroid as a provisional centre) and then
+      recovers the parameters exactly.
 
-      这不是移植引入的 bug —— R 的行为完全相同。论文的源点在网格外 50 格，
-      恰好是 R 初值能工作的情形。
+      This is a property of the optimiser, not an error in the implementation.
+      The source of the paper lies 50 cells outside the grid, which is exactly
+      the situation in which the default start works.
     """
     truth = dict(x0=2.5, y0=3.5, v=0.45, t0=100.0)
     pts = circular_arrival(**truth)
 
-    # max_iter 限到 200 只是为了测试跑得快：R 初值那条路即使给满 10000 轮
-    # 也收敛不到真值（它会一路跑到 10000 轮上限），而质心初值 14 轮就够了。
-    r_only = fit_circular(pts, max_iter=200)          # n_starts=1
-    assert not (abs(r_only.v - truth["v"]) < 0.01
-                and abs(r_only.x0 - truth["x0"]) < 0.5), \
-        "R 的初值在这个量级上本应收敛到错误的局部极小"
+    # max_iter is limited to 200 only to keep the test fast: the default start
+    # does not converge to the truth even with the full 10000 iterations (it runs
+    # into the iteration cap), whereas the centroid start needs 14.
+    default_start = fit_circular(pts, max_iter=200)          # n_starts=1
+    assert not (abs(default_start.v - truth["v"]) < 0.01
+                and abs(default_start.x0 - truth["x0"]) < 0.5), \
+        "the default start should converge to a wrong local minimum at this magnitude"
 
     fixed = fit_circular(pts, n_starts=2, max_iter=200)
     assert fixed.x0 == pytest.approx(truth["x0"], abs=1e-2)
@@ -215,17 +228,19 @@ def test_fit_circular_needs_a_good_start_inside_grid():
     assert fixed.t0 == pytest.approx(truth["t0"], abs=1e-2)
 
 
-def test_centroid_guess_does_not_break_a_case_where_r_already_works():
+def test_centroid_guess_does_not_break_a_case_that_already_converges():
     """
-    多起点的扩展不能把"R 初值本来就能收敛"的情形弄坏。
+    The multi-start extension must not spoil a case in which the default start
+    already converges.
 
-    这里用的量级（源点在网格偏内部、t₀ = 200）R 初值能在 463 轮内收敛，
-    正好用来检验 n_starts=2 不会把好结果换掉。
+    At the magnitude used here (the source slightly inside the grid, t0 = 200) the
+    default start converges within 463 iterations, which makes it a good check
+    that n_starts=2 does not replace a good result with a worse one.
     """
     pts = circular_arrival(4.5, 4.5, 0.45, 200.0)
     one = fit_circular(pts, n_starts=1)
     two = fit_circular(pts, n_starts=2)
-    assert one.v == pytest.approx(0.45, rel=1e-3)          # R 初值本身是对的
+    assert one.v == pytest.approx(0.45, rel=1e-3)          # the default start is already correct
     assert two.v == pytest.approx(one.v, rel=1e-6)
     assert two.x0 == pytest.approx(one.x0, abs=1e-6)
     assert two.loss <= one.loss * (1 + 1e-9)
@@ -239,8 +254,7 @@ def test_centroid_initial_guess_is_sane():
     assert t0_0 == pytest.approx(100.0, abs=10.0)
 
 
-# ── 线波前拟合 ───────────────────────────────────────────────────────────
-
+# --- linear wavefront fitting ---
 def test_fit_linear_recovers_known_parameters():
     pts = linear_arrival(0.3, 2.1, 50.0)
     f = fit_linear(pts)
@@ -251,7 +265,7 @@ def test_fit_linear_recovers_known_parameters():
 
 
 def test_fit_linear_speed_is_inverse_gradient_norm():
-    """论文式：v = 1/√(ã² + b̃²)。"""
+    """Paper formula: v = 1 / sqrt(a_tilde^2 + b_tilde^2)."""
     pts = linear_arrival(0.3, 2.1, 50.0)
     f = fit_linear(pts)
     assert f.v == pytest.approx(1.0 / np.hypot(0.3, 2.1), rel=1e-12)
@@ -259,8 +273,9 @@ def test_fit_linear_speed_is_inverse_gradient_norm():
 
 def test_linear_and_circular_are_both_near_perfect_for_a_far_source():
     """
-    源点远在网格之外时，波前在网格尺度上几乎就是平面 ——
-    这就是论文 §3.2 里两个模型的 R² 都超过 0.93、且线性模型可用的原因。
+    When the source lies far outside the grid the wavefront is almost planar at
+    the grid scale - this is why in §3.2 of the paper both models reach an R2
+    above 0.93 and the linear model is usable.
     """
     pts = circular_arrival(**PAPER_LIKE)
     fc = fit_circular(pts)

@@ -1,18 +1,22 @@
 """
-端到端示例：从原始 MEA 记录到波源估计
+End-to-end example: from a raw MEA recording to a wave-source estimate
 
-这是「给人看的」脚本 —— 跑一遍完整管线，产出
-  · 论文图 9  风格的原始/滤波轨迹图
-  · 论文图 10 风格的 (x,y,t) 空间平面分离图
-  · 论文图 11/12 风格的传播方向箭头图  ← 原 R 代码里没有，这里补上
-  · 论文表 2 / 表 3 / 表 4
+This is the "human-readable" script — it runs the whole pipeline once and
+produces
+  · raw / filtered trace plots in the style of paper Fig. 9
+  · a (x,y,t) view with the spikes separated into planes, in the style of
+    paper Fig. 10
+  · propagation-direction arrow plots in the style of paper Figs. 11/12
+    (an extra view provided by this script)
+  · paper Tables 2 / 3 / 4
 
-平面编号按 t₀ 升序重排，与论文一致，便于直接对照。
+Plane numbering is re-sorted by ascending t₀, matching the paper, so the output
+can be compared with it directly.
 
-运行：
+Run:
     python examples/demo_pipeline.py
 
-输出：
+Output:
     examples/out/*.png, *.csv, tables.md
 """
 
@@ -24,16 +28,16 @@ import sys
 import time
 from pathlib import Path
 
-# matplotlib / fontconfig 的缓存目录必须在 import 之前设好，
-# 否则会因 $HOME 不可写而刷出大量警告
+# The matplotlib / fontconfig cache directories must be set before the imports
+# below, otherwise a non-writable $HOME produces a flood of warnings
 _HERE = Path(__file__).resolve().parent
 _OUT_EARLY = _HERE / "out"
 _OUT_EARLY.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(_OUT_EARLY / ".mplcache"))
 os.environ.setdefault("XDG_CACHE_HOME", str(_OUT_EARLY / ".cache"))
 
-# 允许不安装直接运行：把仓库的 src/ 加入搜索路径。
-# 若已 `pip install -e .`，这一句无副作用。
+# Allow running without installing: add the repository src/ to the search path.
+# If the package was already installed with `pip install -e .`, this is a no-op.
 _SRC = _HERE.parent / "src"
 if _SRC.is_dir():
     sys.path.insert(0, str(_SRC))
@@ -63,7 +67,7 @@ def hr(t=""):
 
 
 def md_table(df: pd.DataFrame, fmt: str = ".4f") -> str:
-    """极简 markdown 表格生成，避免引入 tabulate 依赖。"""
+    """Minimal markdown table builder, to avoid a tabulate dependency."""
     cols = list(df.columns)
     lines = ["| " + " | ".join(str(c) for c in cols) + " |",
              "|" + "|".join("---" for _ in cols) + "|"]
@@ -80,21 +84,22 @@ def md_table(df: pd.DataFrame, fmt: str = ".4f") -> str:
 def main(data_path: Path) -> int:
     T0 = time.time()
 
-    # ══════════════════════════════════════════════════════════════════
-    hr("阶段 1/3  尖峰检测")
+    # ==================================================================
+    hr("Stage 1/3  spike detection")
     rec = load_recording(data_path)
-    print(f"  数据文件 {data_path}")
-    print(f"  {rec.n_samples} 采样点 x {rec.n_channels} 通道, "
+    print(f"  Data file {data_path}")
+    print(f"  {rec.n_samples} samples x {rec.n_channels} channels, "
           f"{rec.sampling_rate_hz:.0f} Hz, {rec.time[-1]:.0f} ms")
 
     spike_times, filtered = detect_all_channels(rec)
     counts = np.array([s.size for s in spike_times])
-    print(f"  检出 {counts.sum()} 个尖峰（每通道 {counts.min()}–{counts.max()}）")
-    print(f"  耗时 {time.time()-T0:.1f} s")
+    print(f"  Detected {counts.sum()} spikes "
+          f"({counts.min()}–{counts.max()} per channel)")
+    print(f"  Elapsed {time.time()-T0:.1f} s")
 
     sp_hough = spikes_to_table(spike_times, rec.channels)     # t/200
 
-    # ── 图 1：轨迹（论文图 9 风格）──────────────────────────────────────
+    # -- Fig. 1: traces (paper Fig. 9 style) ---------------------------
     fig, axes = plt.subplots(2, 1, figsize=(13, 7))
     for ax, ch in zip(axes, ["Ch01", "Ch34"]):
         i = rec.channels.index(ch)
@@ -114,15 +119,15 @@ def main(data_path: Path) -> int:
     plt.close(fig)
     print(f"  → {OUT/'fig1_traces.png'}")
 
-    # ══════════════════════════════════════════════════════════════════
-    hr("阶段 2/3  随机霍夫变换")
+    # ==================================================================
+    hr("Stage 2/3  randomized Hough transform")
     pts = np.column_stack([sp_hough["x"], sp_hough["y"],
                            sp_hough["t"]]).astype(float)
     t1 = time.time()
     res = hough_plane(pts, vote_threshold=8, max_iter=200000,
                       min_detectors=40, seed=1)
     print("  " + res.summary().replace("\n", "\n  "))
-    print(f"  耗时 {time.time()-t1:.1f} s")
+    print(f"  Elapsed {time.time()-t1:.1f} s")
 
     order = np.argsort(sp_hough["t"].to_numpy(), kind="stable")
     x_obs = sp_hough["x"].to_numpy()[order]
@@ -130,8 +135,8 @@ def main(data_path: Path) -> int:
     t_obs = sp_hough["t"].to_numpy()[order]
     pid_raw = res.plane_indices[order]
 
-    # ══════════════════════════════════════════════════════════════════
-    hr("阶段 3/3  波前模型拟合")
+    # ==================================================================
+    hr("Stage 3/3  wavefront model fitting")
     arr = build_result_array(x_obs, y_obs, t_obs, pid_raw, res.n_planes)
     t2 = time.time()
 
@@ -140,16 +145,16 @@ def main(data_path: Path) -> int:
         p = plane_points(arr, k)
         fits.append(dict(old=k, circ=fit_circular(p), lin=fit_linear(p)))
 
-    # ── 按 t₀ 升序重排，使编号与论文表 2 一致 ──────────────────────────
+    # -- Re-sort by ascending t₀ so that the numbering matches paper Table 2 --
     fits.sort(key=lambda d: d["circ"].t0)
     remap = {d["old"]: i + 1 for i, d in enumerate(fits)}
     pid = np.array([remap.get(int(v), 0) if v > 0 else 0 for v in pid_raw])
-    print("  平面编号已按 t₀ 升序重排（与论文口径一致）")
+    print("  Plane indices re-sorted by ascending t₀ (same convention as the paper)")
     for d in fits:
         c, l = d["circ"], d["lin"]
-        print(f"    平面 {remap[d['old']]}: 圆 x0={c.x0:7.3f} y0={c.y0:8.3f} "
-              f"v={c.v:.4f} t0={c.t0:8.2f} R²={c.r2:.6f} ({c.n_iters} 轮)  |  "
-              f"线 ã={l.a:+.4f} b̃={l.b:.4f} v={l.v:.4f} R²={l.r2:.6f}")
+        print(f"    plane {remap[d['old']]}: circ x0={c.x0:7.3f} y0={c.y0:8.3f} "
+              f"v={c.v:.4f} t0={c.t0:8.2f} R²={c.r2:.6f} ({c.n_iters} iters)  |  "
+              f"lin ã={l.a:+.4f} b̃={l.b:.4f} v={l.v:.4f} R²={l.r2:.6f}")
 
     C = pd.DataFrame([dict(plane=i + 1, x0=d["circ"].x0, y0=d["circ"].y0,
                            v=d["circ"].v, t0=d["circ"].t0, r2=d["circ"].r2,
@@ -160,11 +165,11 @@ def main(data_path: Path) -> int:
                            v=d["lin"].v, r2=d["lin"].r2, loss=d["lin"].loss,
                            n_points=d["lin"].n_points)
                       for i, d in enumerate(fits)])
-    print(f"  耗时 {time.time()-t2:.1f} s")
+    print(f"  Elapsed {time.time()-t2:.1f} s")
 
     cmap = plt.get_cmap("tab10")
 
-    # ── 图 2：尖峰按平面着色（论文图 10 风格）──────────────────────────
+    # -- Fig. 2: spikes coloured by plane (paper Fig. 10 style) -------------
     fig = plt.figure(figsize=(14, 6))
     ax = fig.add_subplot(121, projection="3d")
     for k in range(1, len(fits) + 1):
@@ -191,7 +196,8 @@ def main(data_path: Path) -> int:
     plt.close(fig)
     print(f"  → {OUT/'fig2_planes.png'}")
 
-    # ── 图 3：传播方向（论文图 11/12 风格）—— 原 R 代码没有这张图 ──────
+    # -- Fig. 3: propagation directions (paper Figs. 11/12 style) -- added
+    #    by this script on top of the paper's figure set ---------------------
     fig, axes = plt.subplots(1, 2, figsize=(13, 6))
     for ax, (tab, lab, mode) in zip(
             axes, [(C, "circular wavefront  (paper Fig. 11 style)", "circ"),
@@ -222,7 +228,7 @@ def main(data_path: Path) -> int:
     plt.close(fig)
     print(f"  → {OUT/'fig3_directions.png'}")
 
-    # ── 图 4：拟合质量 ────────────────────────────────────────────────
+    # -- Fig. 4: fit quality ------------------------------------------------
     fig, axes = plt.subplots(1, len(fits), figsize=(3.4 * len(fits), 3.6))
     for k, ax in zip(range(1, len(fits) + 1), np.atleast_1d(axes)):
         p = plane_points(arr, fits[k - 1]["old"])
@@ -246,34 +252,37 @@ def main(data_path: Path) -> int:
     plt.close(fig)
     print(f"  → {OUT/'fig4_fit_quality.png'}")
 
-    # ══════════════════════════════════════════════════════════════════
-    hr("论文表 2 / 表 3 / 表 4")
-    print("\n表 2  圆波前模型")
+    # ==================================================================
+    hr("Paper Tables 2 / 3 / 4")
+    print("\nTable 2  circular wavefront model")
     print(f"  {'plane':>5s} {'x0':>9s} {'y0':>9s} {'v':>8s} {'t0':>10s}")
     for _, r in C.iterrows():
         print(f"  {int(r['plane']):>5d} {r['x0']:>9.2f} {r['y0']:>9.2f} "
               f"{r['v']:>8.2f} {r['t0']:>10.2f}")
     on_bound = bool((np.abs(C["y0"] + 50) < 0.01).all())
-    print("\n  y0 全部落在搜索边界 -50？ "
-          + ("✅ 是 — 源点在搜索窗外，应改用线性模型" if on_bound else "❌ 否"))
+    print("\n  Do all y0 estimates sit on the search boundary -50? "
+          + ("✅ yes — the source is outside the search window, so the linear "
+             "model should be used instead" if on_bound else "❌ no"))
 
-    print("\n表 3  线波前模型")
+    print("\nTable 3  linear wavefront model")
     print(f"  {'plane':>5s} {'a(tilde)':>9s} {'b(tilde)':>9s} {'v':>8s}")
     for _, r in L.iterrows():
         print(f"  {int(r['plane']):>5d} {r['a']:>9.2f} {r['b']:>9.2f} {r['v']:>8.2f}")
 
-    print("\n表 4  决定系数 R^2")
-    print(f"  {'plane':>5s} {'R2_circular':>14s} {'R2_linear':>13s} {'圆更好':>8s}")
+    print("\nTable 4  coefficient of determination R^2")
+    print(f"  {'plane':>5s} {'R2_circular':>14s} {'R2_linear':>13s}  "
+          f"{'circular better':<15s}")
     n_better = 0
     for k in range(1, len(fits) + 1):
         rc = float(C[C['plane'] == k]['r2'].iloc[0])
         rl = float(L[L['plane'] == k]['r2'].iloc[0])
         n_better += rc > rl
-        print(f"  {k:>5d} {rc:>14.7f} {rl:>13.7f} {'✅' if rc > rl else '':>8s}")
-    print(f"\n  圆模型在 {n_better}/{len(fits)} 个平面上更好 "
-          f"（论文结论：圆模型对每个平面都略优）")
+        print(f"  {k:>5d} {rc:>14.7f} {rl:>13.7f}  "
+              f"{'✅' if rc > rl else '':<15s}")
+    print(f"\n  The circular model wins on {n_better}/{len(fits)} planes "
+          f"(the paper's conclusion: it is slightly better on every plane)")
 
-    # ── 落盘 ─────────────────────────────────────────────────────────
+    # -- Write the results to disk -----------------------------------------
     C.to_csv(OUT / "table2_circular.csv", index=False)
     L.to_csv(OUT / "table3_linear.csv", index=False)
     T4 = pd.DataFrame({"plane": C["plane"], "R2_circular": C["r2"],
@@ -281,28 +290,28 @@ def main(data_path: Path) -> int:
     T4.to_csv(OUT / "table4_r2.csv", index=False)
 
     with open(OUT / "tables.md", "w") as f:
-        f.write("# 论文表 2 / 3 / 4（Python 版复现）\n\n")
-        f.write(f"- 数据：`{data_path.name}`\n")
-        f.write(f"- {rec.n_channels} 通道，{rec.time[-1]:.0f} ms，"
+        f.write("# Paper Tables 2 / 3 / 4 (computed by this example)\n\n")
+        f.write(f"- Data: `{data_path.name}`\n")
+        f.write(f"- {rec.n_channels} channels, {rec.time[-1]:.0f} ms, "
                 f"{rec.sampling_rate_hz:.0f} Hz\n")
-        f.write(f"- 检出 {counts.sum()} 个尖峰"
-                f"（{counts.min()}–{counts.max()} / 通道）\n")
-        f.write(f"- RHT 找到 {res.n_planes} 个平面，"
-                f"迭代 {res.n_iter_used} 次\n")
-        f.write("- 平面编号按 t0 升序，与论文一致\n\n")
-        f.write("## 表 2　圆波前模型\n\n")
+        f.write(f"- Detected {counts.sum()} spikes "
+                f"({counts.min()}–{counts.max()} per channel)\n")
+        f.write(f"- RHT found {res.n_planes} planes in "
+                f"{res.n_iter_used} iterations\n")
+        f.write("- Plane numbering follows ascending t0, as in the paper\n\n")
+        f.write("## Table 2  Circular wavefront model\n\n")
         f.write(md_table(C[["plane", "x0", "y0", "v", "t0"]], ".2f"))
-        f.write("\n\n## 表 3　线波前模型\n\n")
+        f.write("\n\n## Table 3  Linear wavefront model\n\n")
         f.write(md_table(L[["plane", "a", "b", "v"]], ".2f"))
-        f.write("\n\n## 表 4　决定系数\n\n")
+        f.write("\n\n## Table 4  Coefficient of determination\n\n")
         f.write(md_table(T4, ".7f"))
         f.write("\n")
 
     hr()
-    print(f" ✅ 全部完成，总耗时 {time.time()-T0:.1f} s")
-    print(f"    图: {OUT}/fig1_traces.png  fig2_planes.png  "
+    print(f" ✅ All done, total elapsed {time.time()-T0:.1f} s")
+    print(f"    Figures: {OUT}/fig1_traces.png  fig2_planes.png  "
           f"fig3_directions.png  fig4_fit_quality.png")
-    print(f"    表: {OUT}/table2_circular.csv  table3_linear.csv  "
+    print(f"    Tables:  {OUT}/table2_circular.csv  table3_linear.csv  "
           f"table4_r2.csv  tables.md")
     print()
     return 0
@@ -312,8 +321,10 @@ def _cli() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", default=None,
-                    help="MEA 记录 CSV 路径。不指定则按 WHD_DATA 环境变量、"
-                         "当前目录、仓库 data/ 目录的顺序查找")
+                    help="path to the MEA recording CSV. If omitted, the "
+                         "WHD_DATA environment variable, the current directory "
+                         "and the repository data/ directory are searched in "
+                         "that order")
     args = ap.parse_args()
     try:
         return main(find_recording(args.data))

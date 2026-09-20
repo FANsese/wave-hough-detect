@@ -1,15 +1,19 @@
 """
-与论文发表数字对账（论文表 2 / 表 3 / 表 4）。
+Reconciliation with the published numbers (Tables 2, 3 and 4 of the paper).
 
-这一段需要论文 §3.2 的**实验记录**，它来自合作实验室、不随仓库分发
-（见 ``data/README.md``）。所以：
+This section needs the **experimental recording** of §3.2, which comes from a
+collaborating laboratory and is not distributed with the repository (see
+``data/README.md``). Therefore:
 
-  · 找不到记录时整组测试自动 skip —— 干净克隆的仓库跑 pytest 仍然是全绿的；
-  · 把记录放到 ``data/`` 下并设好 ``WHD_DATA``（或不设，按默认名查找）
-    就会自动生效，逐格核对论文表 2/3/4。
+  · when the recording cannot be found the whole group is skipped automatically,
+    so pytest still comes out green on a clean clone;
+  · dropping the recording into ``data/`` and setting ``WHD_DATA`` (or leaving it
+    unset and relying on the default name) activates the group, which then checks
+    Tables 2/3/4 cell by cell.
 
-已核对通过（2026-09-18，本机）：
-    表 2 的 20 个数字、表 4 的 10 个 R² 全部吻合到论文给出的位数。
+Verified passing (2026-09-18, this machine):
+    all 20 numbers of Table 2 and all 10 R2 values of Table 4 agree with the
+    paper to the printed number of digits.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from wave_hough_detect import (
     spikes_to_table,
 )
 
-# ── 论文表 2：圆波前模型（按 t₀ 升序，与论文编号一致）──────────────────
+# --- Table 2 of the paper: circular wavefront model (ordered by t0, matching the paper numbering) ---
 PAPER_TABLE2 = [
     # t0,      x0,     y0,    v,     R2
     (849.75, -3.93, -50.0, 0.44, 0.9480720),
@@ -39,7 +43,7 @@ PAPER_TABLE2 = [
     (7647.11, -3.51, -50.0, 0.45, 0.9405785),
 ]
 
-# ── 论文表 3：线波前模型 ────────────────────────────────────────────────
+# --- Table 3 of the paper: linear wavefront model ---
 PAPER_TABLE3 = [
     # a(tilde), b(tilde), v,     R2
     (0.34, 2.22, 0.44, 0.9426517),
@@ -55,14 +59,14 @@ def real_pipeline():
     try:
         path = find_recording(None)
     except FileNotFoundError:
-        pytest.skip("找不到论文 §3.2 的实验记录（它不随仓库分发，见 data/README.md）")
+        pytest.skip("the experimental recording of §3.2 was not found (it is not distributed with the repository, see data/README.md)")
 
     rec = load_recording(path)
     spike_times, _ = detect_all_channels(rec)
     sp = spikes_to_table(spike_times, rec.channels)
     pts = sp[["x", "y", "t"]].to_numpy(dtype=float)
 
-    # ★ iter.max 必须 ≥ 200000：R 脚本里的 30000 只够找到 3 个平面
+    # ★ max_iter must be >= 200000: 30000 iterations find only 3 of the 5 planes
     res = hough_plane(pts, vote_threshold=8, max_iter=200000,
                       min_detectors=40, seed=1)
 
@@ -76,12 +80,12 @@ def real_pipeline():
     for k in range(1, res.n_planes + 1):
         p = plane_points(arr, k)
         fits.append((k, fit_circular(p), fit_linear(p)))
-    fits.sort(key=lambda f: f[1].t0)         # 论文按 t₀ 升序编号
+    fits.sort(key=lambda f: f[1].t0)         # the paper numbers the planes by ascending t0
     return dict(path=path, rec=rec, res=res, fits=fits, n_spikes=len(sp))
 
 
 def test_real_data_spike_count(real_pipeline):
-    """论文 §3.2：64 个电极 × 5 次搏动 = 320 个尖峰。"""
+    """§3.2 of the paper: 64 electrodes x 5 beats = 320 spikes."""
     assert real_pipeline["n_spikes"] == 320
 
 
@@ -92,11 +96,11 @@ def test_real_data_finds_five_planes(real_pipeline):
 
 
 def test_table2_circular_model(real_pipeline):
-    """论文表 2：20 个数字逐格核对。"""
+    """Table 2 of the paper: all 20 numbers checked cell by cell."""
     rows = real_pipeline["fits"]
     assert len(rows) == len(PAPER_TABLE2)
     for (t0, x0, y0, v, _), (_, c, _) in zip(PAPER_TABLE2, rows):
-        # t₀ 用来配对（论文的平面编号与"接受顺序"不同）
+        # t0 is used for pairing (the paper numbering differs from the acceptance order)
         assert c.t0 == pytest.approx(t0, abs=0.02)
         assert c.x0 == pytest.approx(x0, abs=0.005)
         assert c.y0 == pytest.approx(y0, abs=0.005)
@@ -105,11 +109,13 @@ def test_table2_circular_model(real_pipeline):
 
 def test_table3_linear_model(real_pipeline):
     """
-    论文表 3：线性模型的 ã / b̃ / v。
+    Table 3 of the paper: a_tilde / b_tilde / v of the linear model.
 
-    容差 0.006 而不是 0.005：表 3 只印到两位小数，而第二位恰好落在进位边界上，
-    例如 b̃ = 2.0249999999997605 印成 2.03（四舍五入）而 Python 的 round 会给 2.02。
-    0.006 覆盖"印刷到两位小数"本身的不确定性，同时仍然是有意义的核对。
+    The tolerance is 0.006 rather than 0.005: Table 3 is printed to two decimals
+    and the second decimal falls exactly on a rounding boundary, for instance
+    b_tilde = 2.0249999999997605 is printed as 2.03 while Python's round gives
+    2.02. The value 0.006 covers the uncertainty of "printed to two decimals"
+    itself while still being a meaningful check.
     """
     rows = real_pipeline["fits"]
     for (a, b, v, _), (_, _, l) in zip(PAPER_TABLE3, rows):
@@ -120,22 +126,25 @@ def test_table3_linear_model(real_pipeline):
 
 def test_table4_coefficient_of_determination(real_pipeline):
     """
-    论文表 4：10 个 R²（5 个平面 × 圆/线两个模型），
-    并且论文的结论是【圆模型在每个平面上都略优】。
+    Table 4 of the paper: the 10 R2 values (5 planes x 2 models),
+    and the conclusion of the paper is that **the circular model is slightly
+    better on every plane**.
     """
     rows = real_pipeline["fits"]
     for (_, _, _, _, r2_paper), (_, c, l) in zip(PAPER_TABLE2, rows):
         assert c.r2 == pytest.approx(r2_paper, abs=1e-6)
     for (_, _, _, r2_paper), (_, _, l) in zip(PAPER_TABLE3, rows):
         assert l.r2 == pytest.approx(r2_paper, abs=1e-6)
-    # 论文的结论：圆模型 5/5 都更好
+    # the conclusion of the paper: the circular model is better on 5/5 planes
     assert all(c.r2 > l.r2 for _, c, l in rows)
 
 
 def test_paper_conclusion_source_lies_outside_the_search_window(real_pipeline):
     """
-    论文 §3.2 的结论之一：圆模型给出的 y₀ 全部贴在搜索窗边界 −50，
-    说明真实源点在搜索窗之外，应当改用线性模型。这里把这个结论固定下来。
+    One of the conclusions of §3.2: the y0 values given by the circular model all
+    sit on the boundary -50 of the search window, which shows that the true source
+    lies outside the search window and that the linear model should be used
+    instead. This conclusion is pinned down here.
     """
     y0 = np.array([c.y0 for _, c, _ in real_pipeline["fits"]])
     assert np.allclose(y0, -50.0, atol=0.01)
