@@ -154,9 +154,15 @@ def plot_accuracy(df: pd.DataFrame, xcol: str, xlabel: str, logx: bool,
     """
     fig, axes = plt.subplots(1, 4, figsize=(17, 4.2))
     for ax, (disp, col, truth) in zip(axes, QUANTITIES):
-        grp = df.groupby(xcol)[col]
-        xs, mean, sd = grp.mean().index.to_numpy(), grp.mean().to_numpy(), \
-            grp.std(ddof=1).to_numpy()
+        # Group by the swept parameter, not by the realised x quantity. For the
+        # noise sweep each replicate has its own realised snr, so grouping by
+        # snr would give one sample per group and every error bar would be NaN
+        # (measured: 46 groups of 1 for 2 replicates x 23 grid points).
+        # x is then the mean of the x quantity within each parameter value.
+        by_param = df.groupby("scan_value")
+        xs = by_param[xcol].mean().to_numpy()
+        mean = by_param[col].mean().to_numpy()
+        sd = by_param[col].std(ddof=1).to_numpy()
         ax.errorbar(xs, mean, yerr=sd, marker="o", ms=4, capsize=3,
                     lw=1.2, color="tab:blue")
         ax.axhline(truth, color="crimson", ls="--", lw=1.4,

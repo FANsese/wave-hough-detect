@@ -452,12 +452,41 @@ def hough_plane(points: np.ndarray,
             # globally flipped
             ang = min(ang, 180.0 - ang)
             (drop if ang > ANGLE_TOL_DEG else keep).append(i + 1)
+        _keep_ix = np.array(keep, dtype=int) - 1      # 0-based, kept planes only
 
-        # points of the dropped planes are marked unclassified again
+        # Points of the dropped planes are marked unclassified again. Clearing
+        # only `prediction` is not enough: `plane_indices`, `keys` and the
+        # per-point plane parameters would keep pointing at a plane that no
+        # longer exists, and HoughResult.n_planes counts distinct positive
+        # plane_indices -- so a dropped plane would still be reported as a
+        # plane and downstream plane_points()/fit_circular() would fit it.
+        # Measured on two synthetic planes 40 degrees apart: n_planes = 2 while
+        # only one plane had any point marked as signal.
         noise_idx = np.flatnonzero(np.isin(plane_indices, drop))
         prediction[noise_idx] = 0
+        plane_indices[noise_idx] = 0
+        keys[noise_idx] = ""
+        n1[noise_idx] = 0.0
+        n2[noise_idx] = 0.0
+        n3[noise_idx] = 0.0
+        rhos[noise_idx] = 0.0
+        # Drop the rejected planes from the per-plane arrays too, and renumber
+        # `keep` to the new contiguous numbering, so that the recovery loop
+        # below indexes these arrays consistently.
+        n1b, n2b, n3b, rb = n1b[_keep_ix], n2b[_keep_ix], n3b[_keep_ix], rb[_keep_ix]
+        keep = list(range(1, len(_keep_ix) + 1))
     else:
         keep = list(range(1, len(n1b) + 1))
+
+    # The dropped planes leave gaps in the numbering, and downstream code
+    # (HoughResult.n_planes, build_result_array, plane_points) assumes plane
+    # indices run 1..K contiguously. Renumber the surviving planes.
+    if apply_angle_rule and len(keep) != len(n1b):
+        remap = {old: new for new, old in enumerate(keep, start=1)}
+        for old, new in remap.items():
+            plane_indices[plane_indices == old] = new
+        # accept_log keeps the acceptance order, which is a historical record;
+        # after this rule it may differ from the final plane numbering.
 
     # -- Recovering unclassified points -----------------------------------
     for i in keep:

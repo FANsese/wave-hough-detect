@@ -198,6 +198,24 @@ def main(data_path: Path, peak_window: int = 1):
               f"ρ={p['rho']:+.4f}")
 
     hr("② Randomized 3D Hough transform (hash accumulator + vote threshold)")
+    # Count the accumulator keys the randomized transform actually touches, so
+    # the memory claim is measured rather than asserted.
+    import wave_hough_detect.rht as _rht
+    _orig_get_key, _keys = _rht.get_key, set()
+
+    def _counting_get_key(*a, **k):
+        v = _orig_get_key(*a, **k)
+        _keys.add(v)
+        return v
+
+    _rht.get_key = _counting_get_key
+    try:
+        _res_pre = hough_plane(pts, vote_threshold=8, max_iter=200000,
+                               min_detectors=MIN_DETECTORS, seed=1)
+    finally:
+        _rht.get_key = _orig_get_key
+    n_keys_rht = len(_keys)
+
     t0 = time.time()
     res = hough_plane(pts, vote_threshold=8, max_iter=200000,
                       min_detectors=MIN_DETECTORS, seed=1)
@@ -205,7 +223,8 @@ def main(data_path: Path, peak_window: int = 1):
     print(f"\n  time        : {t_rht:.2f} s")
     print(f"  draws       : {res.n_iter_used:,}")
     print(f"  accumulator : hash table holding only the keys that were touched "
-          f"(fewer than 100 keys at the peak)")
+          f"({n_keys_rht:,} distinct keys over the whole run, "
+          f"independent of the angular resolution)")
     print(f"  planes found: {res.n_planes}")
     for a in res.accept_log:
         print(f"    plane {a['plane']}: votes {a['votes']}, "
@@ -245,10 +264,13 @@ def main(data_path: Path, peak_window: int = 1):
     print()
     print("  ⚠️ Also note: the global peak of the standard HT is only usable once")
     print("     the degenerate directions have been removed. A vertical plane such")
-    print("     as n = (0,±1,0) carries no time component, and since the rows and")
-    print("     columns of the grid share the same y or x it captures exactly 40")
-    print("     points — right at the coverage threshold — so it would monopolise")
-    print("     the peak. Directions with n orthogonal to the time axis")
+    print("     as n = (0,±1,0) carries no time component; it contains 40 points")
+    print("     (one grid cell per row per wavefront, times five wavefronts) but only")
+    print("     8 distinct detectors, because the same cells repeat across wavefronts.")
+    print("     So it does not pass the coverage test — but it IS the global peak,")
+    print("     its refinement then yields no inliers, and a peak search with a small")
+    print("     retry budget never reaches a real wavefront. Directions with n")
+    print("     orthogonal to the time axis")
     print("     (φ = 90°) are therefore excluded here as well; without that step")
     print("     the standard HT finds no plane at all — an implementation issue,")
     print("     not a methodological one.")

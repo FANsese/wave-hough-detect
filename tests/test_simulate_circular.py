@@ -289,3 +289,81 @@ def test_source_position_is_more_robust_than_speed():
     hi = df[df["scan_value"] == df["scan_value"].max()]
     assert hi["rel_v"].mean() > lo["rel_v"].mean() * 20
     assert hi["rel_x0"].mean() < 0.05
+
+
+# -- regressions found by review ------------------------------------------
+
+def test_evaluate_detection_is_reproducible():
+    """
+    The randomized transform must be seeded from ``seed_shift``; otherwise the
+    whole evaluation is one unseeded snapshot and repeated calls disagree.
+
+    Measured before the fix: 10 calls at the default parameters gave 4 distinct
+    (n_planes, n_signal) outcomes, and three calls with seed_shift=2 gave FPR
+    0.0694 / 0.3021 / 0.2569.
+    """
+    import numpy as np
+    from wave_hough_detect import evaluate_detection
+
+    runs = [evaluate_detection(2) for _ in range(3)]
+    keys = {(r.rates.false_positive_rate, r.rates.false_negative_rate,
+             r.rates.n_planes) for r in runs}
+    assert len(keys) == 1, f"evaluate_detection is not reproducible: {sorted(keys)}"
+
+    a = evaluate_detection(2).rates.as_dict()
+    b = evaluate_detection(2).rates.as_dict()
+    assert a == b
+
+
+def test_evaluate_detection_differs_between_seed_shifts():
+    """Seeding must not collapse every dataset onto the same result."""
+    from wave_hough_detect import evaluate_detection
+    a = evaluate_detection(1).rates
+    b = evaluate_detection(2).rates
+    assert (a.false_positive_rate, a.n_false_pos, a.n_false_neg) != \
+           (b.false_positive_rate, b.n_false_pos, b.n_false_neg)
+
+
+def test_ground_truth_follows_the_simulated_parameters():
+    """
+    Overriding the source position or the excitation time must move the ground
+    truth with it. Before the fix the estimate was scored against the published
+    defaults, overstating the error 142x for a source moved to (40, 30).
+    """
+    from wave_hough_detect import evaluate_circular
+    est = evaluate_circular(1, x=40.0, y=30.0, ts=5.0)
+    assert est.truth == {"x0": 40.0, "y0": 30.0, "v": 1.0, "t0": 5.0}
+    assert est.abs_error["x0"] == pytest.approx(abs(est.x0 - 40.0), abs=1e-12)
+    assert est.abs_error["t0"] == pytest.approx(abs(est.t0 - 5.0), abs=1e-12)
+    # and the defaults are unchanged
+    assert evaluate_circular(1).truth == {"x0": 48.0, "y0": 48.0,
+                                          "v": 1.0, "t0": 2.0}
+
+
+def test_sigma_sweep_holds_the_noise_rate_near_zero():
+    """
+    With noise spikes present their residuals dominate the objective and the
+    sigma trend disappears: measured, |dx0| moves by under 2x across
+    sigma = 0.1..1.0 at lambda_n = 1, and by 10x (proportional to sigma) at
+    lambda_n = 1e-6. The sweep must therefore hold the noise rate near zero.
+    """
+    from wave_hough_detect import accuracy_sweep
+    df = accuracy_sweep(3, n_replicates=2)
+    assert (df["n_noise"] == 0).all(), "the sigma sweep must run without noise spikes"
+    g = df.groupby("scan_value")["abs_x0"].mean()
+    lo, hi = g.iloc[0], g.iloc[-1]
+    assert hi / lo > 8.0, f"sigma trend not recovered: {lo:.5f} -> {hi:.5f}"
+
+
+def test_accuracy_plot_can_show_error_bars():
+    """
+    Grouping must be by the swept parameter. Grouping by the realised snr gave
+    one sample per group and every error bar was NaN.
+    """
+    from wave_hough_detect import accuracy_sweep
+    df = accuracy_sweep(1, n_replicates=2)
+    by_snr = df.groupby("snr")["x0"].std(ddof=1)
+    by_param = df.groupby("scan_value")["x0"].std(ddof=1)
+    assert by_snr.isna().all(), "grouping by snr is the broken behaviour"
+    assert not by_param.isna().any()
+    assert (df.groupby("scan_value").size() > 1).all()

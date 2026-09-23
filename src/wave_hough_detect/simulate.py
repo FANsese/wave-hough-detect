@@ -361,6 +361,12 @@ def evaluate_detection(seed_shift: int = 1, *, hough_kwargs: dict | None = None,
     """
     kwargs = dict(SIM_PRESET)
     kwargs.update(dict(max_iter=30000, vote_threshold=8, min_detectors=40))
+    # The randomized Hough transform must be seeded too, otherwise the whole
+    # evaluation is only a single unseeded snapshot: repeated calls with the
+    # SAME seed_shift return different FPR/FNR and different plane counts
+    # (measured: 4 distinct outcomes in 10 runs at the default parameters).
+    # Tying the RHT seed to seed_shift makes the result a pure function of it.
+    kwargs.setdefault("seed", int(seed_shift))
     if hough_kwargs:
         kwargs.update(hough_kwargs)
 

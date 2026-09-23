@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from wave_hough_detect import hough_plane
-from wave_hough_detect.rht import SIM_PRESET
+from wave_hough_detect.rht import ANGLE_TOL_DEG, SIM_PRESET
 
 
 def _plane_points(normal, rho, side=8, t_max=40.0, t_min=0.5):
@@ -223,3 +223,45 @@ def test_wrong_preset_loses_inliers_on_noisy_points():
                         min_detectors=40, seed=1)
     assert loose.n_planes >= 1
     assert loose.prediction.sum() > tight.prediction.sum()
+
+
+# -- regression found by review -------------------------------------------
+
+def test_dropped_plane_is_removed_from_the_bookkeeping():
+    """
+    A plane rejected by the 5-degree rule must disappear completely.
+
+    Before the fix only ``prediction`` was cleared, so the dropped plane kept
+    its points in ``plane_indices`` and its keys, ``n_planes`` still counted it,
+    and downstream ``plane_points()``/``fit_circular()`` fitted it as if real.
+
+    Construction: two synthetic planes 40 degrees apart, so the angular rule
+    must drop one of them.
+    """
+    n_a = np.array([0.02, 0.03, -1.0])
+    n_a /= np.linalg.norm(n_a)
+    th = np.radians(40.0)
+    rot_x = np.array([[1, 0, 0],
+                      [0, np.cos(th), -np.sin(th)],
+                      [0, np.sin(th), np.cos(th)]])
+    n_b = rot_x @ n_a
+    assert np.degrees(np.arccos(abs(float(n_a @ n_b)))) > ANGLE_TOL_DEG
+
+    pts = np.vstack([_plane_points(n_a, -10.0, t_min=-1000, t_max=1000),
+                     _plane_points(n_b, -10.0, t_min=-1000, t_max=1000)])
+    res = hough_plane(pts, **SIM_PRESET, max_iter=60000, min_detectors=40,
+                      seed=1)
+
+    live = sorted(set(res.plane_indices[res.prediction == 1].tolist()))
+    assert live, "at least one plane must survive"
+    # no plane may exist that has points but no signal points
+    for k in range(1, res.n_planes + 1):
+        m = res.plane_indices == k
+        assert (m & (res.prediction == 1)).any(), \
+            f"plane {k} survived in plane_indices but has no signal points"
+    # numbering stays contiguous so that plane_points() can enumerate it
+    assert live == list(range(1, len(live) + 1))
+    # a dropped plane leaves nothing behind: the surviving points all carry a
+    # real key and a real normal
+    assert (res.keys[res.prediction == 1] != "").all()
+    assert (res.n3[res.prediction == 1] != 0).any()

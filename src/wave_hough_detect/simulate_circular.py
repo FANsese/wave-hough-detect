@@ -363,8 +363,15 @@ def evaluate_circular(seed_shift: int = 0, *, params: dict | None = None,
         prm.update(params)
     prm.update(overrides)
 
+    # The ground truth has to follow the simulated parameters, not the published
+    # defaults: overriding x/y/ts/miu and still scoring against (48, 48, 1, 2)
+    # overstates the error by orders of magnitude (measured: 142x for a source
+    # moved to (40, 30) with t0 = 5).
+    truth = {"x0": float(prm["x"]), "y0": float(prm["y"]),
+             "v": float(prm["miu_x"]), "t0": float(prm["ts"])}
+
     df = simulate_circular_wavefronts(seed_shift, **prm)
-    return estimate_circular_wavefront(df)
+    return estimate_circular_wavefront(df, truth=truth)
 
 
 def accuracy_sweep(plot_mode: int = 1, *, n_replicates: int | None = None,
@@ -411,9 +418,14 @@ def accuracy_sweep(plot_mode: int = 1, *, n_replicates: int | None = None,
     # each mode sweeps one quantity and holds the other two fixed
     var = spec["variable"]
     param = spec["param"]
+    # Each mode sweeps one quantity and holds the other two fixed. The sigma
+    # sweep must hold the noise rate at ~0: with noise spikes present their
+    # residuals dominate the objective and the sigma trend disappears
+    # (measured: relative error changes by <2x across sigma = 0.1..1.0 with
+    # lambda_n = 1, but by >10x, proportional to sigma, with lambda_n = 1e-6).
     fixed = {"snr": {"p": 0.0, "sigma": 1e-6},
              "p": {"noise_freq": 1.0, "sigma": 1e-6},
-             "sigma": {"noise_freq": 1.0, "p": 0.0}}[var]
+             "sigma": {"noise_freq": 1e-6, "p": 0.0}}[var]
 
     rows = []
     for value in grid:

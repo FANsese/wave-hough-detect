@@ -65,9 +65,12 @@ Over 100 simulated datasets (`sim_fig5_fpr_fnr.png`, `sim_detection_rates.csv`):
 
 | Quantity | mean | sd | median |
 |---|---|---|---|
-| FPR (paper's definition) | 0.0674 | 0.0534 | 0.0569 |
-| FNR (paper's definition) | 0.0212 | 0.0434 | 0.0000 |
-| planes found by RHT | 3.01 | 0.97 | 3 |
+| FPR (paper's definition) | 0.0657 | 0.0493 | 0.0563 |
+| FNR (paper's definition) | 0.0195 | 0.0410 | 0.0000 |
+| planes found by RHT | 2.90 | 0.70 | 3 |
+
+These are reproducible bit for bit: `evaluate_detection` seeds the randomized
+transform from `seed_shift`, so a repeated sweep returns identical numbers.
 
 > The paper's FPR/FNR use **all points** as the denominator, not the per-class counts. Both
 > conventions are reported; see `DetectionRates`.
@@ -207,13 +210,19 @@ a test where a test can reach it.
 1. **The vote threshold is 9, not the 8 stated in the paper.** The acceptance test is
    `len(bucket) > vote_threshold * 3` and every vote appends three indices, so nine votes are
    needed before a plane is accepted.
-2. **`iter.max` must be ≥ 200 000** on the experimental recording. At 30 000 only 3 of the 5
-   planes are found.
+2. **`n_planes` alone does not tell you whether the planes came from the voting loop.** There are
+   two routes to a plane — the main accumulator loop, and the tail regrowth that reuses the master
+   normal — and only the first is recorded in `HoughResult.accept_log`. On the experimental
+   recording at `max_iter=30000` the result still reports 5 planes of 64 points each and *still
+   reproduces Tables 2 and 4*, but only 2 of them came from the voting loop; the other 3 were
+   grown. Check `len(res.accept_log)` when it matters. The examples pass `max_iter=200000`, which
+   is enough for all 5 to be voted in for 26 of 30 seeds.
 3. **The sign canonicalisation of the plane normal fails when its first component is near zero.**
    The rule `n̂ ← n̂·sign(n₁)` cannot disambiguate in that case, so one plane can be split between
    the φ ≈ 0° and φ ≈ 180° buckets. On the experimental recording this is the main reason the
    iteration count is high, and that count is a random variable rather than a constant: mean
-   ≈ 13 800 over 30 seeds, range 8 795–21 425.
+   over 30 seeds it has mean 43 833, median 26 066, range 21 915–200 000, and 3 of the 30 seeds
+   exhaust the 200 000 iteration cap.
 4. **`θ = asin(n₂ / sin φ)` is ill-conditioned** as φ → 0 or 180°: it is a ratio of two small
    quantities. Exactly φ = 0 would produce `NaN`, so a deterministic key is substituted there;
    the geometry is unaffected because the key is only a label.
@@ -237,12 +246,13 @@ a test where a test can reach it.
    comparable to the grid coordinates `x, y ∈ [1, 8]`. Feeding a time column in units of 1/200 ms
    makes the Hough geometry meaningless — the pipeline then reports `v ≈ 0` and `t₀ ≈ ±2×10⁷`.
    Measured, not theorised.
-9. **In §3.1.2 the noise spikes, not the measurement error, dominate the error.** The fit is given
-   every point including the noise spikes (`z = 0`), and it is scored with the paper's own loss.
-   With λ_n = 1 there are ≈ 100 outlier spikes whose residuals dwarf the per-electrode measurement
-   error, so sweeping σ from 0.1 to 1.0 barely moves the estimate — measured, the relative error
-   changes by under 2× while with the noise switched off it grows by more than 10×. If Figure 8 is
-   the σ sweep, it is measuring outlier contamination rather than measurement error.
+9. **The σ sweep only measures the measurement error if the noise rate is held at ~0.** The fit is
+   given every point including the noise spikes (`z = 0`) and is scored with the paper's own loss,
+   so with λ_n = 1 there are ≈ 100 outlier spikes whose residuals dwarf the per-electrode error:
+   measured, the relative error moves by under 2× across σ = 0.1…1.0 and `|Δt₀|` even *decreases*.
+   `accuracy_sweep` therefore holds λ_n = 1e-6 for the σ mode, and the error then grows in
+   proportion to σ (0.00085 → 0.00849 in `|Δx₀|` for σ = 0.1 → 1.0). If you re-enable noise there,
+   the plot measures outlier contamination instead.
 10. **The simulation replicates are independent here, and that matters.** The seed is derived from
     the parameters, and `p` is one of the factors — so with `p = 0`, which sweep modes 1 and 3 both
     fix, a naive seed derivation gives the same seed for every replicate and the "repeats" are the
@@ -258,8 +268,11 @@ a test where a test can reach it.
 13. **Two numerical details are easy to get wrong and are pinned by tests.** Integer truncation in
     the accumulator keys must be **toward zero**, not `floor` — otherwise negative-ρ planes land
     one step away in the wrong bucket. And the spike table must be sorted **stably**: the
-    experimental recording has 47 tied `t` values covering 98 points, and an unstable sort silently
-    reorders them, which changes the plane count.
+    experimental recording has 47 tied `t` values covering 98 points. An unstable sort reorders
+    them; on the experimental recording that was measured to leave the plane count at 5 and change
+    only the iteration count, but any procedure that indexes points by position (for example feeding
+    a fixed sequence of sampled indices) then addresses the wrong points, which is why the requirement
+    is kept.
 
 ---
 
@@ -286,8 +299,11 @@ clouds at fine resolution the standard transform runs into a memory wall; RHT do
 Two things this comparison makes concrete:
 
 * The standard transform's global accumulator peak is **not** a wavefront unless degenerate
-  directions are excluded. A vertical plane such as `y = const` covers exactly 40 points — one per
-  cell of a grid row per wavefront — which is exactly the acceptance threshold. Directions whose
+  directions are excluded. A vertical plane such as `y = const` contains 40 *points* — one per cell
+  of a grid row per wavefront — but the acceptance test counts distinct **detectors** `(x, y)`, and
+  the same 8 cells repeat across the 5 wavefronts, so it has only 8. The failure is not that it
+  passes the test but that it *is* the global peak, its least-squares refinement then yields no
+  inliers, and a peak search with a small retry budget never reaches a real wavefront. Directions whose
   normal is orthogonal to the time axis (`φ = 90°`) must be excluded, because such a plane carries
   no time component and cannot represent a wavefront. Without that filter a standard implementation
   finds nothing, which is an artefact of the implementation rather than a property of the method.

@@ -16,8 +16,14 @@ What can be reproduced from this repository alone, what cannot, and why.
 | Synthetic recording | yes, given `seed` | `seed=20260915` by default |
 
 The RHT is randomised by design: the number of iterations needed is a **random variable**. Over 30
-seeds on the experimental data it has mean ≈ 13 800 and range 8 795–21 425 — a factor of 2.4. This
-is a property of the method, not of the implementation. All 30 seeds found all 5 planes.
+seeds on the experimental data it has mean 43 833, median 26 066 and range 21 915–200 000; 3 of
+the 30 seeds exhaust the 200 000 iteration cap. This is a property of the method, not of the
+implementation. All 30 seeds report 5 planes.
+
+What *does* vary with the seed is whether the numbers match the published tables. Checked on the
+experimental recording: 26 of 30 seeds reproduce Table 2 exactly, and seeds 6, 18, 22 and 26 do
+not (worst case `|Δx₀| = 8.59`). The examples use `seed=1`, which reproduces. If you change the
+seed, check the structure before trusting the numbers — every plane must cover all 64 electrodes.
 
 Within one Python process, passing the same `seed` reproduces the same result exactly, and passing
 an explicit `trace` — a pre-drawn sequence of sampled index triples — bypasses the random number
@@ -117,8 +123,11 @@ can reach it. They are the settings a reader has to respect when re-running the 
    (`rht.py` 229) accepts a plane when `len(bucket) > vote_threshold * 3`, and
    every vote appends three indices, so nine votes are needed. Counting votes against the paper's 8
    is off by one.
-2. **`max_iter` must be at least 200 000 on the experimental recording.** At the 30 000 default only
-   3 of the 5 planes are found; the example scripts pass `max_iter=200000`.
+2. **Count planes by `len(HoughResult.accept_log)`, not by `n_planes`.** Planes can be produced by
+   the voting loop or grown by the tail regrowth, and only the former is logged. At
+   `max_iter=30000` the experimental recording still reports 5 planes of 64 points and still
+   reproduces Tables 2 and 4, but only 2 were voted in. The example scripts pass
+   `max_iter=200000`, which suffices for 26 of 30 seeds.
 3. **The sign canonicalisation of the plane normal is ill-conditioned when its first component is
    near zero.** The rule `n̂ ← n̂·sign(n₁)` cannot disambiguate in that case, so one plane can be
    split between the φ ≈ 0° and φ ≈ 180° buckets. On this recording it is the main reason the
